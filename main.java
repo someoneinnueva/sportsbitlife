@@ -4,8 +4,8 @@
 // ============================================================
 
 // !! Replace with your own key. Never commit a real key to source control.
-final String CLAUDE_API_KEY = "REDACTED";
-final String CLAUDE_MODEL   = "claude-sonnet-4-6";
+//final String CLAUDE_API_KEY = "REDACTED";
+//final String CLAUDE_MODEL   = "claude-sonnet-4-6";
 
 // ── Global singletons ────────────────────────────────────────
 GameEngine engine;
