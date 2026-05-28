@@ -26,7 +26,6 @@ void mousePressed()  { engine.processMouse(mouseX, mouseY); }
 void mouseReleased() { engine.processMouseReleased(mouseX, mouseY); }
 void mouseMoved()    { engine.processMouseMoved(mouseX, mouseY); }
 void mouseDragged()  { engine.processMouseMoved(mouseX, mouseY); }
-
 // ============================================================
 // AI SCENARIO ENGINE - Claude API Integration
 // ============================================================
@@ -111,9 +110,10 @@ class AIScenarioEngine {
     return "You are the dynamic event generator for a professional " + cfg.name + " career simulation game.\n\n" +
       "Sport: " + cfg.name + "\n" +
       "Current player state:\n" + playerContext + "\n\n" +
-      "Generate a realistic career event/dilemma this week specific to professional " + cfg.name + ". " +
-      "Consider the player's age, ranking, fatigue, and form. " +
-      "Events should reflect real " + cfg.name + " culture: sponsorships, rivalries, media, injuries, personal life, training decisions.\n\n" +
+      "Generate a realistic life event or dilemma for this " + cfg.name + " player based on their current age and stage. " +
+      "If they are a teenager or university student, focus on youth/student life events. " +
+      "If they are professional (age 18+), focus on professional career events. " +
+      "Consider the player's age, hometown, family, ranking, and personality.\n\n" +
       "Respond ONLY with valid JSON in exactly this format (no markdown, no extra text):\n" +
       "{\n" +
       "  \"type\": \"CAREER_CHOICE\",\n" +
@@ -156,14 +156,23 @@ class AIScenarioEngine {
 
   String buildLegacyPrompt(String playerContext, Player player, Sport sport) {
     SportConfig cfg = getSportConfig(sport);
+    String parentStr = (player.parents != null)
+      ? "\nMom: " + player.parents.mom.name + " | Dad: " + player.parents.dad.name
+      : "";
+    String familyStr = (player.family.spouse != null)
+      ? "\nPartner: " + player.family.partnerName() + " | Kids: " + player.family.children.size()
+      : "\nRelationship: Single";
     return "You are writing the retirement narrative for a professional " + cfg.name + " player.\n\n" +
       "Sport: " + cfg.name + "\n" +
+      "Hometown: " + player.hometown + "\n" +
       "Career summary:\n" + playerContext +
       "\nTotal titles: "   + player.career.titlesWon +
       "\nMajor titles: "   + player.career.grandSlamTitles +
-      "\nPrize money: $"   + (int)player.career.prizeMoney + "\n\n" +
-      "Write a 3-4 sentence legacy summary in the style of a Sports Illustrated retirement piece specific to " + cfg.name + ". " +
-      "Be specific to their stats and career phase. Capture what made them unique.";
+      "\nPrize money: $"   + (int)player.career.prizeMoney +
+      parentStr + familyStr + "\n\n" +
+      "Write a 4-5 sentence legacy story weaving together their sporting achievements, hometown roots, and personal journey. " +
+      "Mention their parents, partner if they have one, and what drove them. " +
+      "Write it as a Sports Illustrated retirement piece. Be specific and emotional.";
   }
 
   // ── HTTP call ──────────────────────────────────────────────
@@ -450,6 +459,7 @@ class EventChoice {
   int moneyEffect         = 0;   // in $1,000s; e.g. 50 = +$50K
   int familyEffect        = 0;   // family happiness delta
   int happinessEffect     = 0;   // player.happiness delta
+  String tag              = "";  // special handler tag (e.g. "go_university")
 }
 
 interface LegacyCallback {
@@ -787,7 +797,7 @@ class CareerScreen extends BaseScreen {
 // Paste your Anthropic API key between the quotes below.
 // Leave empty to run on built-in procedural events only.
 // ============================================================
-final String CLAUDE_API_KEY = "";          // ← paste your key here
+final String CLAUDE_API_KEY = "REDACTED";  // ← paste your key here
 final String CLAUDE_MODEL   = "claude-sonnet-4-6";
 // ============================================================
 // ENUMS
@@ -820,6 +830,7 @@ enum MarketTab       { PROPERTY, VEHICLES, INVESTMENTS, BUSINESS, AGENT }
 enum LifeTab         { OVERVIEW, MENTAL_HEALTH, RELATIONSHIPS, SOCIAL_MEDIA, LEGAL }
 enum ActivityCategory{ CAREER, TRAINING, LOVE, HEALTH, ASSETS, SOCIAL }
 enum SeasonOutcome   { CHAMPION, STRONG, AVERAGE, DISAPPOINTING, INJURY_RIDDLED }
+enum LifePhase       { CHILDHOOD, EARLY_SCHOOL, TEEN, UNIVERSITY, PRO }
 // ============================================================
 // GAME ENGINE  —  age-based loop, activity system, state
 // ============================================================
@@ -960,33 +971,139 @@ class GameEngine {
 
     state.currentYear++;
     Player p = state.player;
+    int    age = p.age(state.currentYear);
 
-    // Simulate the sports season for this year
-    simulateSeason();
+    LifePhase prevPhase = state.lifePhase;
+    updateLifePhase(p, age);
 
-    // Annual finances
-    applyAnnualFinances();
+    // Mark pro career start year the first time we enter PRO
+    if (prevPhase != LifePhase.PRO && state.lifePhase == LifePhase.PRO && state.proCareerStartYear < 0) {
+      state.proCareerStartYear = state.currentYear;
+      p.addLifeEvent("Turned professional — the journey begins.", state.currentYear);
+    }
 
-    // Aging effects
+    // Aging and shared systems
     p.progression.applyAgingDecay(state.currentYear);
-
-    // Update BitLife-style stats from underlying systems
     syncBitLifeStats(p);
-
-    // Family annual update (estimate ~30 weeks away)
-    p.family.advanceYear(30);
     p.weeksInRelationship += 52;
 
-    // Social media organic growth
-    p.socialMedia.updateWeek(p.career.worldRanking, false);
+    if (state.lifePhase == LifePhase.PRO) {
+      simulateSeason();
+      applyAnnualFinances();
+      p.family.advanceYear(30);
+      p.socialMedia.updateWeek(p.career.worldRanking, false);
+      if (age >= 38) state.retirementEligible = true;
+      updateRanking();
+    } else {
+      simulateEarlyLifeYear(p, age);
+    }
 
-    // Retirement eligibility
-    if (p.age(state.currentYear) >= 38) state.retirementEligible = true;
+    // AI events: only for teens and older (younger gets passive story events)
+    if (p.age(state.currentYear) >= 13) {
+      ai.generateWeeklyEvent(p, state.currentYear, 0, state.currentSport);
+    }
+  }
 
-    // Generate AI life event for this year
-    ai.generateWeeklyEvent(p, state.currentYear, 0, state.currentSport);
+  // ── Determine life phase from age ────────────────────────
+  void updateLifePhase(Player p, int age) {
+    if (age < 6) {
+      state.lifePhase = LifePhase.CHILDHOOD;
+    } else if (age < 13) {
+      state.lifePhase = LifePhase.EARLY_SCHOOL;
+    } else if (age < 18) {
+      state.lifePhase = LifePhase.TEEN;
+    } else if (state.inUniversity && age < 22) {
+      state.lifePhase = LifePhase.UNIVERSITY;
+    } else {
+      state.lifePhase = LifePhase.PRO;
+    }
+  }
 
-    updateRanking();
+  // ── Passive simulation for childhood / school / uni years ─
+  void simulateEarlyLifeYear(Player p, int age) {
+    switch (state.lifePhase) {
+      case CHILDHOOD:
+        p.smarts    = constrain(p.smarts    + random(-1, 4), 0, 100);
+        p.happiness = constrain(p.happiness + random(-3, 7), 0, 100);
+        p.wellbeing = constrain(p.wellbeing + random(-2, 5), 0, 100);
+        if (p.parents != null) {
+          float support = (p.parents.mom.relationship + p.parents.dad.relationship) / 2;
+          p.happiness = constrain(p.happiness + map(support, 0, 100, -3, 5), 0, 100);
+        }
+        if (state.lastEvent.isEmpty()) {
+          String[] evts = {
+            "Grew another inch — childhood flying by.",
+            "School awards ceremony — a small trophy, a big smile.",
+            "Summer holidays with family.",
+            "First sports practice at the local club."
+          };
+          state.lastEvent = evts[(int)random(evts.length)];
+          p.addLifeEvent(state.lastEvent, state.currentYear);
+        }
+        break;
+
+      case EARLY_SCHOOL:
+        p.smarts    = constrain(p.smarts    + random(0, 3), 0, 100);
+        p.baseAttributes.speed   = min(70, p.baseAttributes.speed   + (int)random(0, 2));
+        p.baseAttributes.stamina = min(70, p.baseAttributes.stamina + (int)random(0, 1));
+        if (state.lastEvent.isEmpty()) {
+          String[] evts = {
+            "Joined the school " + state.currentSport.toString().toLowerCase() + " team.",
+            "Strong school year — grades and sport improving.",
+            "Local coach noticed your natural talent.",
+            "Youth tournament semi-final — big moment."
+          };
+          state.lastEvent = evts[(int)random(evts.length)];
+          p.addLifeEvent(state.lastEvent, state.currentYear);
+        }
+        break;
+
+      case TEEN:
+        p.smarts    = constrain(p.smarts    + random(-1, 3), 0, 100);
+        p.looks     = constrain(p.looks     + random(-1, 2), 0, 100);
+        p.baseAttributes.serve    = min(80, p.baseAttributes.serve    + (int)random(0, 2));
+        p.baseAttributes.forehand = min(80, p.baseAttributes.forehand + (int)random(0, 2));
+        p.baseAttributes.speed    = min(80, p.baseAttributes.speed    + (int)random(0, 1));
+        // At 17, trigger university decision if not already decided
+        if (age == 17 && state.pendingMatchAction.isEmpty() && state.pendingEvent == null && !state.inUniversity && state.proCareerStartYear < 0) {
+          state.pendingEvent = buildUniversityDecisionEvent(p);
+        }
+        if (state.lastEvent.isEmpty()) {
+          String[] evts = {
+            "Competed in junior regional championships.",
+            "Signed first junior sponsorship — small, but meaningful.",
+            "Intense summer training camp — major growth.",
+            "First teenage heartbreak. Life goes on."
+          };
+          state.lastEvent = evts[(int)random(evts.length)];
+          p.addLifeEvent(state.lastEvent, state.currentYear);
+        }
+        break;
+
+      case UNIVERSITY:
+        p.smarts    = constrain(p.smarts    + random(2, 6), 0, 100);
+        p.baseAttributes.mental = min(85, p.baseAttributes.mental + (int)random(0, 2));
+        if (age >= 21) {
+          state.inUniversity = false;
+          updateLifePhase(p, age);
+          if (state.proCareerStartYear < 0) state.proCareerStartYear = state.currentYear;
+          String grad = "Graduated from university with honors. Going professional!";
+          state.lastEvent = grad;
+          p.addLifeEvent(grad, state.currentYear);
+        } else if (state.lastEvent.isEmpty()) {
+          String[] evts = {
+            "Strong semester — balancing books and sport.",
+            "Collegiate championships silver medal.",
+            "University scholarship renewed.",
+            "Internship at a sports management firm."
+          };
+          state.lastEvent = evts[(int)random(evts.length)];
+          p.addLifeEvent(state.lastEvent, state.currentYear);
+        }
+        break;
+
+      default: break;
+    }
   }
 
   // ── Season simulation (full year abstracted) ─────────────
@@ -1136,8 +1253,20 @@ class GameEngine {
     if (choice.label != null && !choice.label.isEmpty())
       p.addLifeEvent("Decision: " + choice.label, state.currentYear);
 
+    // Handle special tags (university, match decisions, etc.)
+    if (choice.tag != null && !choice.tag.isEmpty()) {
+      handleSpecialChoiceTag(choice.tag, p);
+    }
+
     state.pendingEvent = null;
     ai.hasNewEvent     = false;
+
+    // If a match was queued behind a decision event, run it now
+    if (!state.pendingMatchAction.isEmpty()) {
+      String queuedAction = state.pendingMatchAction;
+      state.pendingMatchAction = "";
+      handleCareerAction(queuedAction, true);
+    }
   }
 
   // ════════════════════════════════════════════════════════
@@ -1145,10 +1274,18 @@ class GameEngine {
   // ════════════════════════════════════════════════════════
 
   // ── Career activities ────────────────────────────────────
-  void handleCareerAction(String action) {
+  void handleCareerAction(String action) { handleCareerAction(action, false); }
+
+  void handleCareerAction(String action, boolean skipMatchDecision) {
     Player p = state.player;
     switch (action) {
       case "tournament":
+        // 40% chance of pre-match decision event (PRO phase only, once per tournament)
+        if (!skipMatchDecision && state.lifePhase == LifePhase.PRO && random(1) < 0.40) {
+          state.pendingMatchAction = "tournament";
+          state.pendingEvent       = buildPreMatchDecisionEvent(p);
+          break;
+        }
         if (calendar.schedule.isEmpty()) break;
         Tournament t = calendar.schedule.get((int)random(calendar.schedule.size()));
         TournamentRun run = t.simulate(p, matchEngine, state.currentYear);
@@ -1259,7 +1396,13 @@ class GameEngine {
 
       case "family":
         p.happiness = constrain(p.happiness + 6, 0, 100);
-        state.lastEvent = "Spent quality time with family — feeling connected.";
+        if (p.parents != null) {
+          p.parents.mom.relationship = constrain(p.parents.mom.relationship + 5, 0, 100);
+          p.parents.dad.relationship = constrain(p.parents.dad.relationship + 5, 0, 100);
+          state.lastEvent = "Called Mom (" + p.parents.mom.name + ") and Dad (" + p.parents.dad.name + "). They're proud of you.";
+        } else {
+          state.lastEvent = "Spent quality time with family — feeling connected.";
+        }
         p.addLifeEvent(state.lastEvent, state.currentYear);
         break;
     }
@@ -1433,6 +1576,7 @@ class GameEngine {
     e.choices     = new ArrayList<EventChoice>();
 
     EventChoice c1 = new EventChoice(); c1.label = "Ask them out";
+    c1.tag = "start_dating_" + name;
     c1.familyEffect = 20; c1.happinessEffect = 15; c1.confidenceEffect = 5;
     c1.description = "Take the leap. Start something new."; e.choices.add(c1);
 
@@ -1453,6 +1597,7 @@ class GameEngine {
     e.choices     = new ArrayList<EventChoice>();
 
     EventChoice c1 = new EventChoice(); c1.label = "Propose!";
+    c1.tag = "propose_yes";
     c1.familyEffect = 30; c1.happinessEffect = 25; c1.moneyEffect = -15;
     c1.description = "Get down on one knee. Change your life."; e.choices.add(c1);
 
@@ -1473,6 +1618,7 @@ class GameEngine {
     e.choices     = new ArrayList<EventChoice>();
 
     EventChoice c1 = new EventChoice(); c1.label = "Have a child";
+    c1.tag = "have_child";
     c1.familyEffect = 20; c1.happinessEffect = 20; c1.moneyEffect = -100; c1.fatigueEffect = 15;
     c1.description = "Start a family. Life will never be the same."; e.choices.add(c1);
 
@@ -1481,6 +1627,7 @@ class GameEngine {
     c2.description = "Wait until you've achieved more on the field."; e.choices.add(c2);
 
     EventChoice c3 = new EventChoice(); c3.label = "Adopt";
+    c3.tag = "have_child";
     c3.familyEffect = 18; c3.happinessEffect = 18; c3.moneyEffect = -80; c3.reputationEffect = 8;
     c3.description = "Grow your family differently. A generous and life-changing choice."; e.choices.add(c3);
     return e;
@@ -1595,6 +1742,423 @@ class GameEngine {
     return e;
   }
 
+  GameEvent buildUniversityDecisionEvent(Player p) {
+    GameEvent e = new GameEvent();
+    e.headline    = "Your Future Awaits";
+    e.description = "You're 17, finishing school in " + p.hometown + ". Scouts are watching — so are university admissions. What path do you choose?";
+    e.choices     = new ArrayList<EventChoice>();
+
+    EventChoice c1 = new EventChoice(); c1.label = "Go Pro Immediately";
+    c1.tag = "go_pro_early"; c1.confidenceEffect = 12; c1.rankingPointsEffect = 100;
+    c1.description = "Bet on yourself. Enter the pro circuit at 18. No looking back."; e.choices.add(c1);
+
+    EventChoice c2 = new EventChoice(); c2.label = "University (3 years)";
+    c2.tag = "go_university"; c2.mentalEffect = 6; c2.happinessEffect = 12;
+    c2.description = "Grow as a person first. Graduate at 21, then go pro with wisdom."; e.choices.add(c2);
+
+    EventChoice c3 = new EventChoice(); c3.label = "Balance Both";
+    c3.tag = "part_time_study"; c3.confidenceEffect = 5; c3.happinessEffect = 6; c3.mentalEffect = 4;
+    c3.description = "Study part-time, train full-time. Hard but rewarding."; e.choices.add(c3);
+
+    return e;
+  }
+
+  GameEvent buildPreMatchDecisionEvent(Player p) {
+    GameEvent e = new GameEvent();
+    String[] scenarios = {
+      "Third set, you're down a break. The crowd is quiet. Your coach shouts something from the sideline.",
+      "You're up two sets — energy dropping fast. Your knee is slightly sore from the previous round.",
+      "Final round. Your opponent just won three in a row. The momentum has shifted.",
+      "Rain delay over. The court is slick. Conditions have completely changed.",
+      "You can see the opponent is cramping. Time to go for the jugular — or play it safe?"
+    };
+    e.headline    = "Match Decision";
+    e.description = scenarios[(int)random(scenarios.length)];
+    e.choices     = new ArrayList<EventChoice>();
+
+    EventChoice c1 = new EventChoice(); c1.label = "Push Harder";
+    c1.confidenceEffect = 15; c1.fatigueEffect = 22; c1.rankingPointsEffect = 40;
+    c1.description = "Leave everything on the court. High risk, match-winning reward."; e.choices.add(c1);
+
+    EventChoice c2 = new EventChoice(); c2.label = "Stay Composed";
+    c2.confidenceEffect = 6; c2.mentalEffect = 3; c2.rankingPointsEffect = 15;
+    c2.description = "Play smart. Trust your training. Minimize errors."; e.choices.add(c2);
+
+    EventChoice c3 = new EventChoice(); c3.label = "Switch Strategy";
+    c3.confidenceEffect = 10; c3.rankingPointsEffect = 25; c3.fatigueEffect = 10;
+    c3.description = "Surprise your opponent. Change the rhythm of the match."; e.choices.add(c3);
+
+    return e;
+  }
+
+  // ── Handle special choice tags ────────────────────────────
+  void handleSpecialChoiceTag(String tag, Player p) {
+    if (tag.startsWith("start_dating_")) {
+      String partnerName = tag.substring("start_dating_".length());
+      if (p.family.spouse == null) {
+        p.family.spouse = new Spouse(partnerName);
+        p.family.status = RelationshipStatus.DATING;
+        p.addLifeEvent("Started dating " + partnerName + ". Something special is growing.", state.currentYear);
+      }
+      return;
+    }
+    switch (tag) {
+      case "go_university":
+        state.inUniversity = true;
+        state.lifePhase    = LifePhase.UNIVERSITY;
+        p.addLifeEvent("Chose university — will graduate at 21 then turn professional.", state.currentYear);
+        break;
+      case "go_pro_early":
+        state.inUniversity       = false;
+        state.proCareerStartYear = state.currentYear;
+        state.lifePhase          = LifePhase.PRO;
+        p.addLifeEvent("Chose to turn professional immediately. The career begins!", state.currentYear);
+        break;
+      case "part_time_study":
+        state.inUniversity       = false;
+        state.proCareerStartYear = state.currentYear;
+        state.lifePhase          = LifePhase.PRO;
+        p.smarts = constrain(p.smarts + 5, 0, 100);
+        p.addLifeEvent("Chose to balance sport and study. Best of both worlds.", state.currentYear);
+        break;
+      case "propose_yes":
+        if (p.family.spouse != null) {
+          p.family.status = RelationshipStatus.ENGAGED;
+          p.addLifeEvent("Engaged to " + p.family.partnerName() + "! The ring is on the finger.", state.currentYear);
+        }
+        break;
+      case "have_child":
+        String[] babyNames = {"Luca","Sofia","Noah","Mia","Mateo","Elena","Lucas","Aria",
+                               "Gabriel","Isla","Marco","Zara","Diego","Luna","Oliver","Maya"};
+        String babyName = babyNames[(int)random(babyNames.length)];
+        p.family.children.add(new Child(babyName, 0));
+        p.addLifeEvent("Welcomed " + babyName + " into the world! A new chapter begins.", state.currentYear);
+        break;
+    }
+  }
+
+  // ── Handle early-life activity actions ───────────────────
+  void handleEarlyLifeActivity(String key) {
+    Player p = state.player;
+    state.lastEvent = "";
+
+    // Shared with PRO phase
+    if (key.equals("intensive") || key.equals("light") || key.equals("mental") || key.equals("recovery")) {
+      handleTrainingAction(key); return;
+    }
+    if (key.equals("doctor") || key.equals("therapy") || key.equals("gym") || key.equals("spa")) {
+      handleHealthAction(key); return;
+    }
+    if (key.equals("post")) { handleSocialAction("post"); return; }
+    if (key.equals("charity")) { handleSocialAction("charity"); return; }
+    if (key.equals("interview")) { handleSocialAction("interview"); return; }
+    if (key.equals("date")) { handleRelationshipAction("date"); return; }
+    if (key.equals("invest")) { handleAssetAction("invest"); return; }
+    if (key.equals("sponsor")) { handleCareerAction("sponsor"); return; }
+
+    switch (key) {
+      // ── CHILDHOOD ──────────────────────────────────────────
+      case "play_outside":
+        p.wellbeing = constrain(p.wellbeing + 6, 0, 100);
+        p.happiness = constrain(p.happiness + 8, 0, 100);
+        state.lastEvent = "Spent the afternoon playing outside. Fresh air, scraped knees, pure joy.";
+        break;
+      case "draw":
+        p.smarts    = constrain(p.smarts    + random(1, 3), 0, 100);
+        p.happiness = constrain(p.happiness + 5, 0, 100);
+        state.lastEvent = "Drew and created all day. Imagination running wild.";
+        break;
+      case "watch_sport":
+        p.baseAttributes.mental = min(99, p.baseAttributes.mental + 1);
+        p.happiness = constrain(p.happiness + 5, 0, 100);
+        state.lastEvent = "Watched a pro match on TV. Eyes wide, completely inspired.";
+        break;
+      case "play_sport":
+        p.baseAttributes.speed = min(70, p.baseAttributes.speed + (int)random(0, 2));
+        p.wellbeing = constrain(p.wellbeing + 6, 0, 100);
+        state.lastEvent = "Kicked the ball around all day. Natural talent starting to show.";
+        break;
+      case "read":
+        p.smarts = constrain(p.smarts + random(1, 4), 0, 100);
+        state.lastEvent = "Read a book from cover to cover. Mind is growing.";
+        break;
+      case "homework":
+      case "study_hard":
+        p.smarts    = constrain(p.smarts    + random(2, 5), 0, 100);
+        p.happiness = constrain(p.happiness - 2, 0, 100);
+        state.lastEvent = "Studied hard. Boring but worthwhile — smarts increasing.";
+        break;
+      case "explore":
+      case "library":
+        p.smarts    = constrain(p.smarts    + random(1, 4), 0, 100);
+        p.happiness = constrain(p.happiness + 2, 0, 100);
+        state.lastEvent = "Explored the world with curiosity. Knowledge is power.";
+        break;
+      case "build":
+      case "creative":
+        p.smarts    = constrain(p.smarts    + random(1, 3), 0, 100);
+        p.happiness = constrain(p.happiness + 4, 0, 100);
+        state.lastEvent = "Built something from scratch. Problem-solving skills sharpening.";
+        break;
+
+      case "talk_mom":
+        if (p.parents != null) {
+          p.parents.mom.relationship = constrain(p.parents.mom.relationship + 10, 0, 100);
+          p.happiness = constrain(p.happiness + 8, 0, 100);
+          state.lastEvent = "Long conversation with Mom (" + p.parents.mom.name + "). She always knows what to say.";
+        }
+        break;
+      case "talk_dad":
+        if (p.parents != null) {
+          p.parents.dad.relationship = constrain(p.parents.dad.relationship + 10, 0, 100);
+          p.happiness = constrain(p.happiness + 8, 0, 100);
+          state.lastEvent = "Spent quality time with Dad (" + p.parents.dad.name + "). Life lessons and laughter.";
+        }
+        break;
+      case "family_time":
+      case "visit_grandparents":
+      case "family_dinner":
+      case "visit_family":
+      case "family_hug":
+        p.happiness = constrain(p.happiness + 9, 0, 100);
+        p.wellbeing = constrain(p.wellbeing + 4, 0, 100);
+        if (p.parents != null) {
+          p.parents.mom.relationship = constrain(p.parents.mom.relationship + 4, 0, 100);
+          p.parents.dad.relationship = constrain(p.parents.dad.relationship + 4, 0, 100);
+          state.lastEvent = "Family time with Mom (" + p.parents.mom.name + ") and Dad (" + p.parents.dad.name + "). Love and warmth.";
+        } else {
+          state.lastEvent = "Quality family time. Feeling grounded and loved.";
+        }
+        break;
+      case "call_parents":
+        if (p.parents != null) {
+          p.parents.mom.relationship = constrain(p.parents.mom.relationship + 7, 0, 100);
+          p.parents.dad.relationship = constrain(p.parents.dad.relationship + 7, 0, 100);
+          p.happiness = constrain(p.happiness + 6, 0, 100);
+          state.lastEvent = "Called Mom (" + p.parents.mom.name + ") and Dad (" + p.parents.dad.name + "). They're proud and supportive.";
+        }
+        break;
+      case "hangout":
+      case "date_together":
+        p.happiness = constrain(p.happiness + 7, 0, 100);
+        if (p.family.spouse != null) {
+          p.family.familyHappiness = constrain(p.family.familyHappiness + 10, 0, 100);
+          state.lastEvent = "Great time with " + p.family.partnerName() + ".";
+        } else {
+          state.lastEvent = "Caught up with close friends. Soul recharged.";
+        }
+        break;
+
+      case "eat_healthy":
+        p.wellbeing = constrain(p.wellbeing + 6, 0, 100);
+        state.lastEvent = "Ate well — fresh food, balanced diet. Body growing strong.";
+        break;
+      case "doctor_visit":
+        p.wellbeing = constrain(p.wellbeing + 5, 0, 100);
+        state.lastEvent = "Checkup — all healthy and growing well.";
+        break;
+      case "sleep":
+        p.wellbeing = constrain(p.wellbeing + 7, 0, 100);
+        p.happiness = constrain(p.happiness + 3, 0, 100);
+        state.lastEvent = "Solid sleep schedule. Full of energy.";
+        break;
+      case "rest":
+        p.form.fatigue = constrain(p.form.fatigue - 20, 0, 100);
+        p.wellbeing    = constrain(p.wellbeing + 8, 0, 100);
+        state.lastEvent = "Rest day — body and mind recharged.";
+        break;
+
+      case "save_allowance":
+      case "chores":
+        p.finances.savings += 200;
+        p.smarts = constrain(p.smarts + 1, 0, 100);
+        state.lastEvent = "Saved up — $200 added. Financial discipline is forming.";
+        break;
+      case "buy_toy":
+        if (p.finances.savings >= 50) {
+          p.finances.savings -= 50;
+          p.happiness = constrain(p.happiness + 14, 0, 100);
+          state.lastEvent = "Bought a new toy. Pure childhood joy. -$50.";
+        } else {
+          state.lastEvent = "Not enough pocket money for that right now.";
+        }
+        break;
+      case "help_home":
+      case "part_time_help":
+        p.finances.savings += 300;
+        if (p.parents != null) {
+          p.parents.mom.relationship = constrain(p.parents.mom.relationship + 3, 0, 100);
+          p.parents.dad.relationship = constrain(p.parents.dad.relationship + 3, 0, 100);
+        }
+        state.lastEvent = "Helped around the house — earned $300 and family praise.";
+        break;
+      case "save_up":
+        p.smarts = constrain(p.smarts + 1, 0, 100);
+        state.lastEvent = "Committed to saving every penny. Discipline building.";
+        break;
+      case "buy_equip":
+        if (p.finances.savings >= 500) {
+          p.finances.savings -= 500;
+          p.baseAttributes.serve = min(90, p.baseAttributes.serve + 2);
+          state.lastEvent = "Bought better training equipment. Game already feels different. -$500";
+          p.addLifeEvent(state.lastEvent, state.currentYear);
+        } else {
+          state.lastEvent = "Need at least $500 for proper equipment.";
+        }
+        break;
+      case "part_time_job":
+        float jobIncome = random(600, 2500);
+        p.finances.savings += jobIncome;
+        p.happiness = constrain(p.happiness - 3, 0, 100);
+        state.lastEvent = "Part-time job income — +" + formatMoney(jobIncome) + ". Building the war chest.";
+        break;
+      case "first_invest":
+        if (p.finances.savings >= 1000) {
+          p.finances.savings -= 1000;
+          OwnedInvestment firstInv = new OwnedInvestment("First Investment", InvestmentType.STOCKS, 1000);
+          p.finances.investments.add(firstInv);
+          p.smarts = constrain(p.smarts + 3, 0, 100);
+          state.lastEvent = "First investment ever — $1K into stocks. The wealth journey starts.";
+          p.addLifeEvent(state.lastEvent, state.currentYear);
+        } else {
+          state.lastEvent = "Need $1K to make your first investment.";
+        }
+        break;
+      case "scholarship":
+        p.smarts = constrain(p.smarts + 3, 0, 100);
+        p.finances.savings += 5000;
+        state.lastEvent = "Applied for scholarship — received $5K grant! Hard work paying off.";
+        p.addLifeEvent(state.lastEvent, state.currentYear);
+        break;
+
+      case "make_friend":
+        p.happiness = constrain(p.happiness + 11, 0, 100);
+        state.lastEvent = "Made a new best friend. Life is better with good people.";
+        break;
+      case "join_club":
+      case "school_club":
+        p.smarts    = constrain(p.smarts    + 2, 0, 100);
+        p.happiness = constrain(p.happiness + 5, 0, 100);
+        state.lastEvent = "Joined an after-school club. Found a tribe of like-minded people.";
+        break;
+      case "community":
+      case "local_event":
+        p.reputation.applyPositive(4);
+        p.happiness = constrain(p.happiness + 4, 0, 100);
+        state.lastEvent = "Participated in a local community event. Building roots.";
+        break;
+      case "post_clip":
+        p.socialMedia.updateWeek(p.career.worldRanking, true);
+        p.happiness = constrain(p.happiness + 3, 0, 100);
+        state.lastEvent = "Posted a training clip online — a few hundred people noticed.";
+        break;
+
+      // ── SCHOOL-AGE / TEEN SPORT ────────────────────────────
+      case "school_sports":
+      case "phys_train":
+        p.baseAttributes.speed   = min(80, p.baseAttributes.speed   + (int)random(1, 3));
+        p.baseAttributes.stamina = min(80, p.baseAttributes.stamina + (int)random(0, 2));
+        p.happiness = constrain(p.happiness + 5, 0, 100);
+        state.lastEvent = "School sports — standing out, talent noticed by coaches.";
+        break;
+      case "youth_train":
+        p.baseAttributes.serve    = min(80, p.baseAttributes.serve    + (int)random(1, 3));
+        p.baseAttributes.forehand = min(80, p.baseAttributes.forehand + (int)random(0, 2));
+        p.form.fatigue = constrain(p.form.fatigue + 12, 0, 100);
+        state.lastEvent = "Youth training session — skill developing fast.";
+        break;
+      case "watch_pro":
+        p.baseAttributes.mental  = min(90, p.baseAttributes.mental  + (int)random(1, 3));
+        p.form.confidence        = constrain(p.form.confidence + 5, 0, 100);
+        state.lastEvent = "Watched the pros up close — absorbed so much about the game.";
+        break;
+      case "school_tourney":
+        boolean wonSchool = random(1) > 0.45;
+        p.form.confidence = constrain(p.form.confidence + (wonSchool ? 12 : -3), 0, 100);
+        int sPts = wonSchool ? (int)random(50, 200) : (int)random(10, 50);
+        float sPrize = wonSchool ? random(200, 1500) : 0;
+        p.career.rankingPoints += sPts;
+        p.finances.savings     += sPrize;
+        p.career.prizeMoney    += sPrize;
+        if (wonSchool) p.career.titlesWon++;
+        state.lastEvent = (wonSchool ? "Won the school tournament! " : "Strong run at school tournament. ") + "+" + sPts + " pts" + (wonSchool ? ", +" + formatMoney(sPrize) : "");
+        p.addLifeEvent(state.lastEvent, state.currentYear);
+        break;
+      case "youth_tourney":
+        boolean wonYouth = random(1) > 0.40;
+        p.form.confidence = constrain(p.form.confidence + (wonYouth ? 15 : -4), 0, 100);
+        int yPts = wonYouth ? (int)random(150, 600) : (int)random(20, 100);
+        float yPrize = wonYouth ? random(500, 8000) : 0;
+        p.career.rankingPoints += yPts;
+        p.finances.savings     += yPrize;
+        p.career.prizeMoney    += yPrize;
+        if (wonYouth) p.career.titlesWon++;
+        state.lastEvent = (wonYouth ? "Won the youth tournament! " : "Good junior tournament run. ") + "+" + yPts + " pts" + (wonYouth ? ", +" + formatMoney(yPrize) : "");
+        p.addLifeEvent(state.lastEvent, state.currentYear);
+        break;
+      case "approach_scout":
+        p.form.confidence = constrain(p.form.confidence + 8, 0, 100);
+        p.reputation.applyPositive(5);
+        state.lastEvent = "Approached a professional scout — left a strong impression.";
+        p.addLifeEvent(state.lastEvent, state.currentYear);
+        break;
+      case "hire_first_coach":
+        if (p.finances.savings >= 1000) {
+          p.finances.savings -= 1000;
+          p.baseAttributes.serve    = min(90, p.baseAttributes.serve    + (int)random(2, 5));
+          p.baseAttributes.mental   = min(90, p.baseAttributes.mental   + 3);
+          p.form.confidence         = constrain(p.form.confidence + 10, 0, 100);
+          state.lastEvent = "Hired first real coach — stats jumped immediately. -$1K";
+          p.addLifeEvent(state.lastEvent, state.currentYear);
+        } else {
+          state.lastEvent = "Need at least $1K to hire a coach.";
+        }
+        break;
+      case "amateur_match":
+        boolean wonAmateur = random(1) > 0.45;
+        p.form.confidence = constrain(p.form.confidence + (wonAmateur ? 8 : -3), 0, 100);
+        int aPts = wonAmateur ? (int)random(30, 100) : 5;
+        p.career.rankingPoints += aPts;
+        state.lastEvent = (wonAmateur ? "Won the amateur match! " : "Lost the amateur match. ") + "+" + aPts + " pts.";
+        break;
+      case "hire_coach":
+        handleCareerAction("coach"); break;
+      case "collegiate_match":
+        boolean wonColl = random(1) > 0.40;
+        p.form.confidence = constrain(p.form.confidence + (wonColl ? 14 : -5), 0, 100);
+        int cPts = wonColl ? (int)random(200, 900) : (int)random(30, 120);
+        float cPrize = wonColl ? random(1000, 12000) : 0;
+        p.career.rankingPoints += cPts;
+        p.finances.savings     += cPrize;
+        p.career.prizeMoney    += cPrize;
+        if (wonColl) p.career.titlesWon++;
+        state.lastEvent = (wonColl ? "Won the collegiate match! " : "Fought hard in collegiate match. ") + "+" + cPts + " pts" + (wonColl ? ", +" + formatMoney(cPrize) : "");
+        p.addLifeEvent(state.lastEvent, state.currentYear);
+        break;
+      case "study_film":
+        p.baseAttributes.mental = min(90, p.baseAttributes.mental + (int)random(1, 3));
+        p.form.confidence       = constrain(p.form.confidence + 5, 0, 100);
+        state.lastEvent = "Studied opponent film — tactical IQ sharpening.";
+        break;
+      case "tutor":
+        p.smarts = constrain(p.smarts + random(2, 5), 0, 100);
+        state.lastEvent = "Tutoring session — smarts climbing.";
+        break;
+
+      default:
+        state.lastEvent = "Spent the year making progress.";
+        break;
+    }
+
+    if (!state.lastEvent.isEmpty() && !key.equals("school_tourney") && !key.equals("youth_tourney")
+        && !key.equals("approach_scout") && !key.equals("hire_first_coach") && !key.equals("collegiate_match")
+        && !key.equals("first_invest") && !key.equals("scholarship") && !key.equals("buy_equip")
+        && !key.equals("call_parents") && !key.equals("talk_mom") && !key.equals("talk_dad")
+        && !key.equals("doctor_visit")) {
+      p.addLifeEvent(state.lastEvent, state.currentYear);
+    }
+  }
+
   // ── Input routing ─────────────────────────────────────────
   void processKey(char k, int kc) {
     if (k == ' ' && currentScreen == ScreenID.CAREER) ageUp();
@@ -1619,23 +2183,27 @@ class GameEngine {
   void processMouseMoved(int mx, int my)    { activeScreen.onHover(mx, my); }
 
   // ── New game ──────────────────────────────────────────────
-  void newGame(String playerName, String nationality, PlayStyle style, String hand, Sport sport) {
+  void newGame(String playerName, String nationality, String hometown, PlayStyle style, String hand, Sport sport, int birthYear) {
     state              = new GameState();
     state.currentSport = sport;
     state.sportConfig  = getSportConfig(sport);
-    state.player       = new Player(playerName, nationality, 2000, style, hand);
-    state.currentYear  = 2018;
+    state.player       = new Player(playerName, nationality, birthYear, style, hand);
+    state.player.hometown = hometown;
+    state.currentYear  = birthYear;   // start from birth
+    state.lifePhase    = LifePhase.CHILDHOOD;
     state.player.career.worldRanking  = (int)random(200, 400);
-    state.player.career.rankingPoints = (int)random(0, 200);
+    state.player.career.rankingPoints = 0;
+    state.player.finances.savings     = 0;
 
     calendar = new TournamentCalendar(sport);
     ranking.generateWorldPlayers(50, state.sportConfig);
 
-    // Starting life event
-    state.player.addLifeEvent("Turned professional — the journey begins.", state.currentYear);
+    String parentStr = (state.player.parents != null)
+      ? "Born to " + state.player.parents.mom.name + " and " + state.player.parents.dad.name + "."
+      : "";
+    state.player.addLifeEvent("Born in " + hometown + ", " + nationality + ". " + parentStr, birthYear);
 
     switchTo(ScreenID.CAREER);
-    ai.generateWeeklyEvent(state.player, state.currentYear, 0, sport);
   }
 }
 
@@ -1643,13 +2211,17 @@ class GameEngine {
 class GameState {
   Player    player;
   int       currentYear = 2018;
-  GameEvent pendingEvent       = null;
+  GameEvent pendingEvent        = null;
   TournamentRun lastTournamentRun = null;
-  String    lastEvent          = "";
-  boolean   retirementEligible = false;
+  String    lastEvent           = "";
+  boolean   retirementEligible  = false;
   ArrayList<String> decisionLog = new ArrayList<String>();
-  Sport       currentSport = Sport.TENNIS;
-  SportConfig sportConfig  = null;
+  Sport       currentSport  = Sport.TENNIS;
+  SportConfig sportConfig   = null;
+  LifePhase   lifePhase     = LifePhase.CHILDHOOD;
+  boolean     inUniversity  = false;
+  String      pendingMatchAction   = "";
+  int         proCareerStartYear   = -1;
 }
 
 // ── Ranking System ────────────────────────────────────────
@@ -1711,24 +2283,125 @@ class LifeScreen extends BaseScreen {
   ActivityCategory selectedCategory = null;
   boolean hoverAgeUp = false;
 
-  // Layout constants  (no "static" — Processing inner classes forbid it)
+  // Layout constants
   final float LP_X = 15,  LP_W = 265;
   final float MP_X = 290, MP_W = 520;
   final float RP_X = 820, RP_W = 365;
   final float PY   = 62,  PH   = 700;
 
-  final String[][] SUB_LABELS = {
-    {"Enter Tournament",    "Seek Sponsor",     "Hire Coach",      "Press Day"},
-    {"Intensive Training",  "Light Practice",   "Mental Coaching", "Recovery Week"},
-    {"Go on a Date",        "Spend Time Together","Have a Child",  "Call Family"},
-    {"Doctor Checkup",      "Start Therapy",    "Hit the Gym",     "Spa Day"},
-    {"Buy Property",        "Invest Money",     "Buy a Car",       "Start Business"},
-    {"Post on Socials",     "Charity Event",    "Give Interview",  "Hire PR Manager"}
-  };
-
-  final String[] CAT_LABELS = {"CAREER","TRAINING","LOVE & FAM.","HEALTH","ASSETS","SOCIAL"};
-
   LifeScreen(GameEngine e) { super(e); }
+
+  // ── Phase-aware category labels ───────────────────────────
+  String[] getCatLabels() {
+    LifePhase phase = engine.state.lifePhase;
+    if (phase == LifePhase.CHILDHOOD)    return new String[]{"PLAY","LEARN","FAMILY","HEALTH","POCKET $","SOCIAL"};
+    if (phase == LifePhase.EARLY_SCHOOL) return new String[]{"SPORT","STUDY","FAMILY","HEALTH","MONEY","SOCIAL"};
+    if (phase == LifePhase.TEEN)         return new String[]{"SPORT","STUDY","LOVE","HEALTH","MONEY","SOCIAL"};
+    if (phase == LifePhase.UNIVERSITY)   return new String[]{"SPORT","STUDY","LOVE & FAM.","HEALTH","FINANCES","SOCIAL"};
+    return new String[]{"CAREER","TRAINING","LOVE & FAM.","HEALTH","ASSETS","SOCIAL"};
+  }
+
+  String[][] getSubLabels() {
+    LifePhase phase = engine.state.lifePhase;
+    switch (phase) {
+      case CHILDHOOD:
+        return new String[][]{
+          {"Play Outside","Draw & Create","Watch Sports","Play Sport"},
+          {"Read Books","Do Homework","Explore Nature","Build Things"},
+          {"Family Time","Talk to Mom","Talk to Dad","Visit Family"},
+          {"Eat Healthy","Doctor Visit","Sleep Early","Rest Day"},
+          {"Save Allowance","Buy a Toy","Help at Home","Yard Sale"},
+          {"Make a Friend","Birthday Party","School Show","Join Club"}
+        };
+      case EARLY_SCHOOL:
+        return new String[][]{
+          {"School Sports","Youth Training","Watch Pro Match","School Tournament"},
+          {"Study Hard","Library Time","Creative Project","Extra Tutoring"},
+          {"Hang with Friends","Call Parents","Family Dinner","Visit Family"},
+          {"Eat Healthy","Doctor Checkup","Physical Training","Rest Day"},
+          {"Do Chores","Save Up","Buy Equipment","Part-time Help"},
+          {"Post Clip Online","Local Event","Community Work","School Club"}
+        };
+      case TEEN:
+        return new String[][]{
+          {"Youth Tournament","Approach Scout","Hire First Coach","Amateur Match"},
+          {"Intensive Drill","Light Practice","Mental Focus","Recovery Week"},
+          {"Go on a Date","Call Parents","Family Time","Date Together"},
+          {"Doctor Checkup","Start Therapy","Hit the Gym","Rest Day"},
+          {"Part-time Job","Buy Equipment","Save Up","First Investment"},
+          {"Post on Socials","Charity Work","Give Interview","Seek Sponsor"}
+        };
+      case UNIVERSITY:
+        return new String[][]{
+          {"Collegiate Match","Approach Scout","Hire Coach","Study Film"},
+          {"Intensive Training","Light Practice","Mental Coaching","Recovery Week"},
+          {"Go on a Date","Call Parents","Family Dinner","Date Together"},
+          {"Doctor Checkup","Start Therapy","Hit the Gym","Spa Day"},
+          {"Part-time Job","Invest Savings","Apply Scholarship","Buy Equipment"},
+          {"Post on Socials","Charity Event","Give Interview","Seek Sponsor"}
+        };
+      default: // PRO
+        return new String[][]{
+          {"Enter Tournament","Seek Sponsor","Hire Coach","Press Day"},
+          {"Intensive Training","Light Practice","Mental Coaching","Recovery Week"},
+          {"Go on a Date","Spend Time Together","Have a Child","Call Family"},
+          {"Doctor Checkup","Start Therapy","Hit the Gym","Spa Day"},
+          {"Buy Property","Invest Money","Buy a Car","Start Business"},
+          {"Post on Socials","Charity Event","Give Interview","Hire PR Manager"}
+        };
+    }
+  }
+
+  String[][] getActionKeys() {
+    LifePhase phase = engine.state.lifePhase;
+    switch (phase) {
+      case CHILDHOOD:
+        return new String[][]{
+          {"play_outside","draw","watch_sport","play_sport"},
+          {"read","homework","explore","build"},
+          {"family_time","talk_mom","talk_dad","visit_family"},
+          {"eat_healthy","doctor_visit","sleep","rest"},
+          {"save_allowance","buy_toy","help_home","help_home"},
+          {"make_friend","make_friend","make_friend","join_club"}
+        };
+      case EARLY_SCHOOL:
+        return new String[][]{
+          {"school_sports","youth_train","watch_pro","school_tourney"},
+          {"study_hard","library","creative","tutor"},
+          {"hangout","call_parents","family_dinner","family_time"},
+          {"eat_healthy","doctor_visit","phys_train","rest"},
+          {"chores","save_up","buy_equip","part_time_help"},
+          {"post_clip","local_event","community","school_club"}
+        };
+      case TEEN:
+        return new String[][]{
+          {"youth_tourney","approach_scout","hire_first_coach","amateur_match"},
+          {"intensive","light","mental","recovery"},
+          {"date","call_parents","family_time","date_together"},
+          {"doctor","therapy","gym","rest"},
+          {"part_time_job","buy_equip","save_up","first_invest"},
+          {"post","charity","interview","sponsor"}
+        };
+      case UNIVERSITY:
+        return new String[][]{
+          {"collegiate_match","approach_scout","hire_coach","study_film"},
+          {"intensive","light","mental","recovery"},
+          {"date","call_parents","family_dinner","date_together"},
+          {"doctor","therapy","gym","spa"},
+          {"part_time_job","invest","scholarship","buy_equip"},
+          {"post","charity","interview","sponsor"}
+        };
+      default: // PRO
+        return new String[][]{
+          {"tournament","sponsor","coach","media"},
+          {"intensive","light","mental","recovery"},
+          {"date","propose","child","family"},
+          {"doctor","therapy","gym","spa"},
+          {"property","invest","car","business"},
+          {"post","charity","interview","pr"}
+        };
+    }
+  }
 
   // ── Main render ───────────────────────────────────────────
   void render() {
@@ -1747,7 +2420,7 @@ class LifeScreen extends BaseScreen {
   }
 
   // ════════════════════════════════════════════════════════
-  // LEFT PANEL  —  player vitals + BitLife stat bars
+  // LEFT PANEL  —  player vitals
   // ════════════════════════════════════════════════════════
   void drawLeftPanel(Player p) {
     float x = LP_X, y = PY, w = LP_W;
@@ -1759,16 +2432,25 @@ class LifeScreen extends BaseScreen {
 
     fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, TOP);
     text("Age " + p.age(engine.state.currentYear) + "  ·  " + p.nationality, x + 14, y + 36);
+    if (!p.hometown.isEmpty()) {
+      fill(theme.TEXT_DIM); textSize(9);
+      text(p.hometown, x + 14, y + 48);
+    }
 
-    // Sport badge
-    SportConfig sc = engine.state.sportConfig != null ? engine.state.sportConfig : getSportConfig(Sport.TENNIS);
-    fill(theme.ACCENT, 35); rect(x + 14, y + 52, w - 28, 20, 10); noStroke();
+    // Phase badge
+    LifePhase phase = engine.state.lifePhase;
+    SportConfig sc  = engine.state.sportConfig != null ? engine.state.sportConfig : getSportConfig(Sport.TENNIS);
+    fill(theme.ACCENT, 35); rect(x + 14, y + 60, w - 28, 20, 10); noStroke();
     fill(theme.ACCENT); textSize(9); textAlign(CENTER, CENTER);
-    text(engine.state.currentSport.toString() + "  ·  " + sc.rankLabel + " #" + p.career.worldRanking, x + w/2, y + 62);
+    if (phase == LifePhase.PRO) {
+      text(engine.state.currentSport.toString() + "  ·  " + sc.rankLabel + " #" + p.career.worldRanking, x + w/2, y + 70);
+    } else {
+      text(phaseLabel(phase) + "  ·  Age " + p.age(engine.state.currentYear), x + w/2, y + 70);
+    }
 
-    y += 82;
+    y += 90;
 
-    // 4 BitLife stat bars
+    // BitLife stat bars
     statBar("HEALTH",    p.wellbeing, theme.SUCCESS,   x + 14, y, w - 28); y += 36;
     statBar("HAPPINESS", p.happiness, theme.TEXT_GOLD, x + 14, y, w - 28); y += 36;
     statBar("SMARTS",    p.smarts,    theme.ACCENT2,   x + 14, y, w - 28); y += 36;
@@ -1777,82 +2459,112 @@ class LifeScreen extends BaseScreen {
     // Divider
     stroke(theme.BORDER); strokeWeight(1);
     line(x + 14, y + 4, x + w - 14, y + 4); noStroke();
-    y += 16;
-
-    // Career stats
-    fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP);
-    text("TITLES", x + 14, y);
-    text("GS", x + 80, y);
-    text("PRIZE MONEY", x + 120, y);
     y += 14;
 
-    fill(theme.ACCENT); textSize(20); textAlign(LEFT, TOP);
-    text("" + p.career.titlesWon, x + 14, y);
-    fill(theme.TEXT); textSize(20);
-    text("" + p.career.grandSlamTitles, x + 80, y);
-    fill(theme.SUCCESS); textSize(14);
-    text(formatMoney(p.career.prizeMoney), x + 120, y);
-    y += 34;
+    if (phase == LifePhase.PRO) {
+      // Career stats
+      fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP);
+      text("TITLES", x + 14, y); text("GS", x + 80, y); text("PRIZE MONEY", x + 120, y);
+      y += 14;
+      fill(theme.ACCENT); textSize(20); textAlign(LEFT, TOP); text("" + p.career.titlesWon, x + 14, y);
+      fill(theme.TEXT); textSize(20); text("" + p.career.grandSlamTitles, x + 80, y);
+      fill(theme.SUCCESS); textSize(14); text(formatMoney(p.career.prizeMoney), x + 120, y);
+      y += 34;
 
-    // Money
-    fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP);
-    text("SAVINGS", x + 14, y);
-    y += 13;
-    fill(p.finances.savings > 50000 ? theme.SUCCESS : theme.DANGER); textSize(16);
-    text(formatMoney(p.finances.savings), x + 14, y);
-    y += 28;
+      fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP); text("SAVINGS", x + 14, y); y += 13;
+      fill(p.finances.savings > 50000 ? theme.SUCCESS : theme.DANGER); textSize(16);
+      text(formatMoney(p.finances.savings), x + 14, y); y += 28;
 
-    // Mental state
-    color mCol = p.mentalHealth.stateColor();
-    fill(mCol, 35); rect(x + 14, y, w - 28, 22, 4);
-    fill(mCol); textSize(9); textAlign(CENTER, CENTER);
-    text("MENTAL: " + p.mentalHealth.stateLabel().toUpperCase(), x + w/2, y + 11);
-    y += 30;
+      color mCol = p.mentalHealth.stateColor();
+      fill(mCol, 35); rect(x + 14, y, w - 28, 22, 4);
+      fill(mCol); textSize(9); textAlign(CENTER, CENTER);
+      text("MENTAL: " + p.mentalHealth.stateLabel().toUpperCase(), x + w/2, y + 11); y += 30;
 
-    // Injury warning
-    if (p.health.status != InjuryStatus.HEALTHY) {
-      fill(theme.DANGER, 35); rect(x + 14, y, w - 28, 22, 4);
-      fill(theme.DANGER); textSize(9); textAlign(CENTER, CENTER);
-      text("INJURED: " + p.health.injuredPart + " (" + p.health.weeksRemaining + "wk)", x + w/2, y + 11);
-      y += 30;
+      if (p.health.status != InjuryStatus.HEALTHY) {
+        fill(theme.DANGER, 35); rect(x + 14, y, w - 28, 22, 4);
+        fill(theme.DANGER); textSize(9); textAlign(CENTER, CENTER);
+        text("INJURED: " + p.health.injuredPart + " (" + p.health.weeksRemaining + "wk)", x + w/2, y + 11); y += 30;
+      }
+
+      if (p.family.spouse != null) {
+        fill(theme.FAMILY, 35); rect(x + 14, y, w - 28, 22, 4);
+        fill(theme.FAMILY); textSize(9); textAlign(CENTER, CENTER);
+        text("♥  " + p.family.statusDisplay(), x + w/2, y + 11); y += 30;
+      }
+
+      // Kids
+      if (!p.family.children.isEmpty()) {
+        for (Child c : p.family.children) {
+          fill(theme.ACCENT2, 30); rect(x + 14, y, w - 28, 18, 4);
+          fill(theme.ACCENT2); textSize(8); textAlign(CENTER, CENTER);
+          text("Child: " + c.name + " (age " + c.age + ")", x + w/2, y + 9); y += 22;
+        }
+      }
+
+    } else {
+      // EARLY LIFE stats
+      fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP);
+      text("SAVINGS", x + 14, y); y += 13;
+      fill(theme.SUCCESS); textSize(14);
+      text(formatMoney(p.finances.savings), x + 14, y); y += 28;
+
+      // Parents
+      if (p.parents != null) {
+        fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP);
+        text("PARENTS", x + 14, y); y += 14;
+
+        fill(p.parents.mom.relationshipColor(), 35); rect(x + 14, y, w - 28, 22, 4);
+        fill(p.parents.mom.relationshipColor()); textSize(8); textAlign(LEFT, CENTER);
+        text("Mom: " + p.parents.mom.name, x + 18, y + 11);
+        textAlign(RIGHT, CENTER);
+        text(p.parents.mom.relationshipLabel(), x + w - 18, y + 11); y += 26;
+
+        fill(p.parents.dad.relationshipColor(), 35); rect(x + 14, y, w - 28, 22, 4);
+        fill(p.parents.dad.relationshipColor()); textSize(8); textAlign(LEFT, CENTER);
+        text("Dad: " + p.parents.dad.name, x + 18, y + 11);
+        textAlign(RIGHT, CENTER);
+        text(p.parents.dad.relationshipLabel(), x + w - 18, y + 11); y += 30;
+      }
+
+      if (p.family.spouse != null) {
+        fill(theme.FAMILY, 35); rect(x + 14, y, w - 28, 22, 4);
+        fill(theme.FAMILY); textSize(9); textAlign(CENTER, CENTER);
+        text("♥  " + p.family.statusDisplay(), x + w/2, y + 11); y += 28;
+      }
     }
 
-    // Family status
-    if (p.family.spouse != null) {
-      fill(theme.FAMILY, 35); rect(x + 14, y, w - 28, 22, 4);
-      fill(theme.FAMILY); textSize(9); textAlign(CENTER, CENTER);
-      text("♥  " + p.family.statusDisplay(), x + w/2, y + 11);
-      y += 30;
-    }
-
-    // Sport attributes (compact bars)
-    y += 6;
+    // Sport attributes (compact) — shown for all phases
+    y += 4;
     stroke(theme.BORDER); strokeWeight(1);
-    line(x + 14, y, x + w - 14, y); noStroke();
-    y += 10;
-
+    line(x + 14, y, x + w - 14, y); noStroke(); y += 8;
     fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP);
     text("SPORT ATTRIBUTES", x + 14, y); y += 14;
 
     PlayerAttributes eff = p.effectiveAttributes();
     String[] statNames = sc.statNames;
     int[] statVals = {eff.serve, eff.forehand, eff.backhand, eff.volley, eff.speed, eff.stamina, eff.mental};
-
     for (int i = 0; i < min(statNames.length, 7); i++) {
-      fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP);
-      text(statNames[i], x + 14, y);
-      fill(theme.TEXT); textAlign(RIGHT, TOP);
-      text("" + statVals[i], x + w - 14, y);
+      if (y > PY + PH - 20) break;
+      fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text(statNames[i], x + 14, y);
+      fill(theme.TEXT); textAlign(RIGHT, TOP); text("" + statVals[i], x + w - 14, y);
       theme.drawStatBar(x + 14, y + 9, w - 28, 4, statVals[i], 99, theme.ACCENT2);
       y += 20;
     }
   }
 
+  String phaseLabel(LifePhase phase) {
+    switch (phase) {
+      case CHILDHOOD:    return "CHILDHOOD";
+      case EARLY_SCHOOL: return "SCHOOL";
+      case TEEN:         return "TEENAGER";
+      case UNIVERSITY:   return "UNIVERSITY";
+      default:           return "PRO";
+    }
+  }
+
   void statBar(String label, float val, color col, float x, float y, float w) {
-    fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP);
-    text(label, x, y);
-    fill(col); textAlign(RIGHT, TOP);
-    text((int)val + "%", x + w, y);
+    fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP); text(label, x, y);
+    fill(col); textAlign(RIGHT, TOP); text((int)val + "%", x + w, y);
     theme.drawStatBar(x, y + 12, w, 11, val, 100, col);
   }
 
@@ -1862,7 +2574,6 @@ class LifeScreen extends BaseScreen {
   void drawMiddlePanel(Player p) {
     float x = MP_X, y = PY, w = MP_W;
 
-    // Loading strip
     if (engine.ai.isLoading) {
       theme.drawCard(x, y, w, 52, true);
       fill(theme.ACCENT); textSize(12); textAlign(CENTER, CENTER);
@@ -1871,32 +2582,21 @@ class LifeScreen extends BaseScreen {
     }
 
     if (engine.state.pendingEvent != null) {
-      // Full-height event card
       drawEventPanel(engine.state.pendingEvent, x, y, w);
-
     } else {
-      // Life feed
       float cardH = PH - (engine.ai.isLoading ? 58 : 0);
       theme.drawCard(x, y, w, cardH);
 
-      // Last event banner
       if (!engine.state.lastEvent.isEmpty()) {
-        fill(theme.ACCENT, 28); noStroke();
-        rect(x + 10, y + 10, w - 20, 32, 4);
+        fill(theme.ACCENT, 28); noStroke(); rect(x + 10, y + 10, w - 20, 32, 4);
         fill(theme.ACCENT); textSize(11); textAlign(LEFT, CENTER);
-        text("» " + engine.state.lastEvent, x + 20, y + 26);
-        y += 46;
-      } else {
-        y += 10;
-      }
+        text("» " + engine.state.lastEvent, x + 20, y + 26); y += 46;
+      } else { y += 10; }
 
-      // Feed header
-      fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP);
-      text("LIFE FEED", x + 14, y + 8);
+      fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP); text("LIFE FEED", x + 14, y + 8);
       stroke(theme.BORDER); line(x + 14, y + 20, x + w - 14, y + 20); noStroke();
       y += 28;
 
-      // Event entries
       ArrayList<String> feed = p.lifeEvents;
       if (feed.isEmpty()) {
         fill(theme.TEXT_DIM); textSize(13); textAlign(CENTER, CENTER);
@@ -1919,25 +2619,19 @@ class LifeScreen extends BaseScreen {
         }
       }
 
-      // Recent results
-      if (!p.career.recentResults.isEmpty()) {
+      if (engine.state.lifePhase == LifePhase.PRO && !p.career.recentResults.isEmpty()) {
         float ry = PY + PH - 150;
         stroke(theme.BORDER); line(x + 14, ry, x + w - 14, ry); noStroke();
         ry += 8;
-        fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP);
-        text("RECENT RESULTS", x + 14, ry); ry += 16;
+        fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP); text("RECENT RESULTS", x + 14, ry); ry += 16;
         int shown = min(3, p.career.recentResults.size());
         for (int i = 0; i < shown; i++) {
           MatchResult r = p.career.recentResults.get(i);
-          fill(r.playerWon ? color(20,45,25) : color(45,20,20));
-          rect(x + 8, ry, w - 16, 28, 3);
-          fill(r.playerWon ? theme.SUCCESS : theme.DANGER);
-          textSize(10); textAlign(LEFT, CENTER);
+          fill(r.playerWon ? color(20,45,25) : color(45,20,20)); rect(x + 8, ry, w - 16, 28, 3);
+          fill(r.playerWon ? theme.SUCCESS : theme.DANGER); textSize(10); textAlign(LEFT, CENTER);
           text(r.playerWon ? "W" : "L", x + 18, ry + 14);
-          fill(theme.TEXT); textAlign(LEFT, CENTER);
-          text(r.tournamentName + " " + r.round, x + 34, ry + 14);
-          fill(theme.TEXT_DIM); textAlign(RIGHT, CENTER);
-          text(r.score + " +" + r.rankingPointsAwarded + "pts", x + w - 14, ry + 14);
+          fill(theme.TEXT); textAlign(LEFT, CENTER); text(r.tournamentName + " " + r.round, x + 34, ry + 14);
+          fill(theme.TEXT_DIM); textAlign(RIGHT, CENTER); text(r.score + " +" + r.rankingPointsAwarded + "pts", x + w - 14, ry + 14);
           ry += 32;
         }
       }
@@ -1946,11 +2640,12 @@ class LifeScreen extends BaseScreen {
 
   color feedColor(String e) {
     String low = e.toLowerCase();
-    if (low.contains("won") || low.contains("title") || low.contains("champion")) return theme.ACCENT;
-    if (low.contains("married") || low.contains("partner") || low.contains("child") || low.contains("love")) return theme.FAMILY;
+    if (low.contains("won") || low.contains("title") || low.contains("champion") || low.contains("graduated")) return theme.ACCENT;
+    if (low.contains("born") || low.contains("married") || low.contains("partner") || low.contains("child") || low.contains("love") || low.contains("dating") || low.contains("engaged")) return theme.FAMILY;
     if (low.contains("injur") || low.contains("hospital") || low.contains("surgery")) return theme.DANGER;
-    if (low.contains("$") || low.contains("deal") || low.contains("money") || low.contains("invest")) return theme.SUCCESS;
+    if (low.contains("$") || low.contains("deal") || low.contains("money") || low.contains("invest") || low.contains("pts")) return theme.SUCCESS;
     if (low.contains("scandal") || low.contains("legal") || low.contains("court") || low.contains("charged")) return theme.DANGER;
+    if (low.contains("mom") || low.contains("dad") || low.contains("parent") || low.contains("family")) return theme.FAMILY;
     return theme.ACCENT2;
   }
 
@@ -1961,25 +2656,23 @@ class LifeScreen extends BaseScreen {
     float x = RP_X, w = RP_W, y = PY;
     theme.drawCard(x, y, w, PH);
 
-    // "AGE UP" button — anchored to bottom
+    // AGE UP button
     float btnY = PY + PH - 62;
     hoverAgeUp = theme.isHover(hoverX, hoverY, x + 10, btnY, w - 20, 50);
     fill(hoverAgeUp ? theme.ACCENT : color(40, 52, 28));
     stroke(theme.ACCENT); strokeWeight(hoverAgeUp ? 2 : 1);
-    rect(x + 10, btnY, w - 20, 50, 6);
-    noStroke();
+    rect(x + 10, btnY, w - 20, 50, 6); noStroke();
     fill(hoverAgeUp ? theme.BG : theme.ACCENT);
-    textSize(14); textAlign(CENTER, CENTER);
-    text("▶  AGE UP  [SPACE]", x + w/2, btnY + 25);
+    textSize(13); textAlign(CENTER, CENTER);
+    String btnLabel = engine.state.lifePhase == LifePhase.PRO ? "▶  AGE UP  [SPACE]" : "▶  NEXT YEAR  [SPACE]";
+    text(btnLabel, x + w/2, btnY + 25);
 
-    // Year / age label
     fill(theme.TEXT_DIM); textSize(9); textAlign(CENTER, TOP);
     text(engine.state.currentYear + "  ·  Age " + p.age(engine.state.currentYear), x + w/2, btnY + 56);
 
     // Activity area
     fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP);
     text("ACTIVITIES", x + 14, y + 14);
-
     float ay = y + 30;
 
     if (selectedCategory == null) {
@@ -1988,33 +2681,36 @@ class LifeScreen extends BaseScreen {
       drawSubMenu(x + 10, ay, w - 20);
     }
 
-    // Quick season summary
-    float sumY = y + 30 + 248;  // below grid/submenu
+    // Summary box below grid/submenu
+    float sumY = y + 30 + 248;
     fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP);
-    text("SEASON AT A GLANCE", x + 14, sumY);
-    sumY += 14;
-    fill(theme.PANEL_2); rect(x + 10, sumY, w - 20, 90, 4);
-    sumY += 10;
+    text("OVERVIEW", x + 14, sumY); sumY += 14;
+    fill(theme.PANEL_2); rect(x + 10, sumY, w - 20, 90, 4); sumY += 10;
 
-    fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP);
-    text("RANKING POINTS", x + 18, sumY);
-    fill(theme.ACCENT); textSize(15);
-    text("" + p.career.rankingPoints, x + 18, sumY + 12);
-
-    fill(theme.TEXT_DIM); textSize(9);
-    text("FATIGUE", x + 18, sumY + 34);
-    theme.drawStatBar(x + 18, sumY + 46, w - 36, 8, p.form.fatigue, 100,
-      p.form.fatigue > 70 ? theme.DANGER : theme.ACCENT2);
-
-    fill(theme.TEXT_DIM); textSize(9);
-    text("CONFIDENCE", x + 130, sumY + 34);
-    theme.drawStatBar(x + 130, sumY + 46, w - 148, 8, p.form.confidence, 100, theme.SUCCESS);
+    if (engine.state.lifePhase == LifePhase.PRO) {
+      fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP); text("RANKING POINTS", x + 18, sumY);
+      fill(theme.ACCENT); textSize(15); text("" + p.career.rankingPoints, x + 18, sumY + 12);
+      fill(theme.TEXT_DIM); textSize(9); text("FATIGUE", x + 18, sumY + 34);
+      theme.drawStatBar(x + 18, sumY + 46, w - 36, 8, p.form.fatigue, 100, p.form.fatigue > 70 ? theme.DANGER : theme.ACCENT2);
+      fill(theme.TEXT_DIM); textSize(9); text("CONFIDENCE", x + 130, sumY + 34);
+      theme.drawStatBar(x + 130, sumY + 46, w - 148, 8, p.form.confidence, 100, theme.SUCCESS);
+    } else {
+      fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP); text("SMARTS", x + 18, sumY);
+      theme.drawStatBar(x + 18, sumY + 12, w - 36, 8, p.smarts, 100, theme.ACCENT2);
+      fill(theme.TEXT_DIM); textSize(9); text("SAVINGS", x + 18, sumY + 34);
+      fill(p.finances.savings > 500 ? theme.SUCCESS : theme.TEXT_DIM); textSize(12); textAlign(LEFT, TOP);
+      text(formatMoney(p.finances.savings), x + 18, sumY + 46);
+      if (p.parents != null) {
+        fill(theme.TEXT_DIM); textSize(8); textAlign(RIGHT, TOP);
+        text("Mom: " + (int)p.parents.mom.relationship + "  Dad: " + (int)p.parents.dad.relationship, x + w - 18, sumY + 70);
+      }
+    }
   }
 
   void drawActivityGrid(float x, float y, float w) {
+    String[] labels = getCatLabels();
     color[] cols = {theme.ACCENT, theme.ACCENT2, theme.FAMILY, theme.SUCCESS, theme.TEXT_GOLD, theme.PURPLE};
-    float bw = (w - 6) / 2f;
-    float bh = 68;
+    float bw = (w - 6) / 2f, bh = 68;
     for (int i = 0; i < 6; i++) {
       int col = i % 2, row = i / 2;
       float bx = x + col * (bw + 6);
@@ -2022,12 +2718,10 @@ class LifeScreen extends BaseScreen {
       boolean hov = theme.isHover(hoverX, hoverY, bx, by, bw, bh);
       fill(hov ? cols[i] : theme.PANEL_2);
       stroke(hov ? cols[i] : theme.BORDER); strokeWeight(1);
-      rect(bx, by, bw, bh, 6);
-      noStroke();
+      rect(bx, by, bw, bh, 6); noStroke();
       fill(hov ? theme.BG : cols[i]);
       textSize(10); textAlign(CENTER, CENTER);
-      text(CAT_LABELS[i], bx + bw/2, by + bh/2 - 6);
-      // Small arrow
+      text(labels[i], bx + bw/2, by + bh/2 - 6);
       fill(hov ? theme.BG : color(red(cols[i]), green(cols[i]), blue(cols[i]), 120));
       textSize(9); text("▸ tap", bx + bw/2, by + bh/2 + 10);
     }
@@ -2035,31 +2729,25 @@ class LifeScreen extends BaseScreen {
 
   void drawSubMenu(float x, float y, float w) {
     int catIdx = catIndex();
+    String[][] subLabels = getSubLabels();
     color col  = catColor(catIdx);
+    String[] labels = subLabels[catIdx];
 
-    // Back button + header
     boolean hBack = theme.isHover(hoverX, hoverY, x, y, 70, 26);
     fill(hBack ? theme.PANEL_2 : theme.PANEL);
-    stroke(theme.BORDER); strokeWeight(1);
-    rect(x, y, 70, 26, 4); noStroke();
-    fill(theme.TEXT_DIM); textSize(9); textAlign(CENTER, CENTER);
-    text("← BACK", x + 35, y + 13);
+    stroke(theme.BORDER); strokeWeight(1); rect(x, y, 70, 26, 4); noStroke();
+    fill(theme.TEXT_DIM); textSize(9); textAlign(CENTER, CENTER); text("← BACK", x + 35, y + 13);
 
-    fill(col); textSize(12); textAlign(LEFT, CENTER);
-    text(CAT_LABELS[catIdx], x + 80, y + 13);
+    String[] catLabels = getCatLabels();
+    fill(col); textSize(12); textAlign(LEFT, CENTER); text(catLabels[catIdx], x + 80, y + 13);
     y += 34;
 
-    // Sub-options
-    for (int i = 0; i < SUB_LABELS[catIdx].length; i++) {
+    for (int i = 0; i < labels.length; i++) {
       boolean hov = theme.isHover(hoverX, hoverY, x, y, w, 48);
-      fill(hov ? col : theme.PANEL_2);
-      stroke(hov ? col : theme.BORDER); strokeWeight(1);
-      rect(x, y, w, 48, 4);
-      noStroke();
-      fill(hov ? theme.BG : theme.TEXT);
-      textSize(12); textAlign(LEFT, CENTER);
-      text(SUB_LABELS[catIdx][i], x + 14, y + 24);
-      y += 54;
+      fill(hov ? col : theme.PANEL_2); stroke(hov ? col : theme.BORDER); strokeWeight(1);
+      rect(x, y, w, 48, 4); noStroke();
+      fill(hov ? theme.BG : theme.TEXT); textSize(12); textAlign(LEFT, CENTER);
+      text(labels[i], x + 14, y + 24); y += 54;
     }
   }
 
@@ -2080,32 +2768,25 @@ class LifeScreen extends BaseScreen {
   // INPUT
   // ════════════════════════════════════════════════════════
   void onClick(int mx, int my) {
-    // Age Up button
     float btnY = PY + PH - 62;
     if (theme.isHover(mx, my, RP_X + 10, btnY, RP_W - 20, 50)) {
-      engine.ageUp();
-      return;
+      engine.ageUp(); return;
     }
 
-    // Event card choice clicks
     if (engine.state.pendingEvent != null && engine.state.pendingEvent.choices != null) {
       ArrayList<EventChoice> choices = engine.state.pendingEvent.choices;
       float ex = MP_X, ey = PY + 118;
       for (int i = 0; i < choices.size(); i++) {
         if (theme.isHover(mx, my, ex + 14, ey, MP_W - 28, 54)) {
-          engine.applyChoice(choices.get(i));
-          return;
+          engine.applyChoice(choices.get(i)); return;
         }
         ey += 64;
       }
       return;
     }
 
-    // Activity panel clicks
     float ax = RP_X + 10, aw = RP_W - 20, ay = PY + 30;
-
     if (selectedCategory == null) {
-      // Grid
       float bw = (aw - 6) / 2f, bh = 68;
       ActivityCategory[] cats = ActivityCategory.values();
       for (int i = 0; i < 6; i++) {
@@ -2113,25 +2794,17 @@ class LifeScreen extends BaseScreen {
         float bx = ax + c * (bw + 6);
         float by = ay + r * (bh + 6);
         if (theme.isHover(mx, my, bx, by, bw, bh)) {
-          selectedCategory = cats[i];
-          return;
+          selectedCategory = cats[i]; return;
         }
       }
     } else {
-      // Back button
-      if (theme.isHover(mx, my, ax, ay, 70, 26)) {
-        selectedCategory = null;
-        return;
-      }
+      if (theme.isHover(mx, my, ax, ay, 70, 26)) { selectedCategory = null; return; }
       ay += 34;
-
-      // Sub-option
+      String[][] subLabels = getSubLabels();
       int catIdx = catIndex();
-      for (int i = 0; i < SUB_LABELS[catIdx].length; i++) {
+      for (int i = 0; i < subLabels[catIdx].length; i++) {
         if (theme.isHover(mx, my, ax, ay, aw, 48)) {
-          dispatchActivity(catIdx, i);
-          selectedCategory = null;
-          return;
+          dispatchActivity(catIdx, i); selectedCategory = null; return;
         }
         ay += 54;
       }
@@ -2139,22 +2812,21 @@ class LifeScreen extends BaseScreen {
   }
 
   void dispatchActivity(int catIdx, int optIdx) {
-    String[][] keys = {
-      {"tournament","sponsor","coach","media"},
-      {"intensive","light","mental","recovery"},
-      {"date","propose","child","family"},
-      {"doctor","therapy","gym","spa"},
-      {"property","invest","car","business"},
-      {"post","charity","interview","pr"}
-    };
+    String[][] keys = getActionKeys();
     String k = keys[catIdx][optIdx];
-    switch (catIdx) {
-      case 0: engine.handleCareerAction(k);       break;
-      case 1: engine.handleTrainingAction(k);     break;
-      case 2: engine.handleRelationshipAction(k); break;
-      case 3: engine.handleHealthAction(k);       break;
-      case 4: engine.handleAssetAction(k);        break;
-      case 5: engine.handleSocialAction(k);       break;
+    LifePhase phase = engine.state.lifePhase;
+
+    if (phase == LifePhase.PRO) {
+      switch (catIdx) {
+        case 0: engine.handleCareerAction(k);       break;
+        case 1: engine.handleTrainingAction(k);     break;
+        case 2: engine.handleRelationshipAction(k); break;
+        case 3: engine.handleHealthAction(k);       break;
+        case 4: engine.handleAssetAction(k);        break;
+        case 5: engine.handleSocialAction(k);       break;
+      }
+    } else {
+      engine.handleEarlyLifeActivity(k);
     }
   }
 
@@ -2465,6 +3137,11 @@ class MainMenuScreen extends BaseScreen {
   final int VISIBLE_ITEMS = 8;
   final float ITEM_H      = 30;
 
+  // Hometown + birth year
+  String  hometown      = "Madrid";
+  int     birthYear     = 2000;
+  boolean hoverHometown = false;
+
   // Hover tracking
   boolean hoverStart = false;
   boolean hoverName  = false;
@@ -2501,7 +3178,7 @@ class MainMenuScreen extends BaseScreen {
     line(width / 2 - 160, titleY + 76, width / 2 + 160, titleY + 76);
     noStroke();
 
-    float cardW = 520, cardH = 510;
+    float cardW = 520, cardH = 570;
     float cx = width / 2 - cardW / 2;
     float cy = 155;
     tint(255, formAlpha);
@@ -2576,6 +3253,29 @@ class MainMenuScreen extends BaseScreen {
     dropListY = fy + 16 + 36 + 2;
     dropListW = fw;
     fy += 64;
+
+    // ── Hometown ────────────────────────────────────────────
+    drawField("HOMETOWN / CITY", hometown, cx + 20, fy, fw, focusedField == 1 || hoverHometown);
+    fy += 64;
+
+    // ── Birth year ──────────────────────────────────────────
+    fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, TOP);
+    text("BIRTH YEAR", cx + 20, fy);
+    fy += 16;
+    int[] birthYears   = {1990, 1993, 1995, 1998, 2000, 2002, 2005};
+    String[] yearShort = {"'90","'93","'95","'98","'00","'02","'05"};
+    float byw = (fw - (birthYears.length - 1) * 3) / birthYears.length;
+    for (int i = 0; i < birthYears.length; i++) {
+      boolean sel = birthYears[i] == birthYear;
+      fill(sel ? theme.ACCENT : theme.PANEL_2);
+      stroke(sel ? theme.ACCENT : theme.BORDER); strokeWeight(1);
+      rect(cx + 20 + i * (byw + 3), fy, byw, 32, 4);
+      noStroke();
+      fill(sel ? theme.BG : theme.TEXT_DIM);
+      textSize(10); textAlign(CENTER, CENTER);
+      text(yearShort[i], cx + 20 + i * (byw + 3) + byw / 2, fy + 16);
+    }
+    fy += 48;
 
     // ── Role / Play Style ───────────────────────────────────
     fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, TOP);
@@ -2750,10 +3450,23 @@ class MainMenuScreen extends BaseScreen {
       return;
     }
 
+    // ── Hometown field ─────────────────────────────────────
+    if (theme.isHover(mx, my, cx + 20, cy + 248, fw, 36)) { focusedField = 1; return; }
+
+    // ── Birth year buttons ─────────────────────────────────
+    int[] birthYears = {1990, 1993, 1995, 1998, 2000, 2002, 2005};
+    float byw = (fw - (birthYears.length - 1) * 3) / birthYears.length;
+    float yy  = cy + 312;
+    for (int i = 0; i < birthYears.length; i++) {
+      if (theme.isHover(mx, my, cx + 20 + i * (byw + 3), yy, byw, 32)) {
+        birthYear = birthYears[i]; return;
+      }
+    }
+
     // ── Role buttons ───────────────────────────────────────
     PlayStyle[] styles = PlayStyle.values();
     float sw  = (fw - (styles.length - 1) * 3) / styles.length;
-    float styY = cy + 248;
+    float styY = cy + 376;
     for (int i = 0; i < styles.length; i++) {
       if (theme.isHover(mx, my, cx + 20 + i * (sw + 3), styY, sw, 36)) {
         playStyle = styles[i]; return;
@@ -2761,15 +3474,15 @@ class MainMenuScreen extends BaseScreen {
     }
 
     // ── Dominant side buttons ──────────────────────────────
-    float hy = cy + 314;
+    float hy = cy + 442;
     if (theme.isHover(mx, my, cx + 20,  hy, 90, 32)) { dominantSide = "Right"; return; }
     if (theme.isHover(mx, my, cx + 120, hy, 90, 32)) { dominantSide = "Left";  return; }
 
     // ── Begin button ───────────────────────────────────────
-    float by = cy + 364;
+    float by = cy + 492;
     if (theme.isHover(mx, my, cx + 20, by, fw, 48)) {
       if (!playerName.isEmpty()) {
-        engine.newGame(playerName, nationality, playStyle, dominantSide, selectedSport);
+        engine.newGame(playerName, nationality, hometown, playStyle, dominantSide, selectedSport, birthYear);
       }
     }
 
@@ -2779,7 +3492,8 @@ class MainMenuScreen extends BaseScreen {
   void onHover(int mx, int my) {
     super.onHover(mx, my);
     float cx = width / 2 - 260, cy = 155, fw = 480;
-    hoverName = theme.isHover(mx, my, cx + 20, cy + 120, fw, 36);
+    hoverName     = theme.isHover(mx, my, cx + 20, cy + 120, fw, 36);
+    hoverHometown = theme.isHover(mx, my, cx + 20, cy + 248, fw, 36);
   }
 
   void onKey(char k, int kc) {
@@ -2801,12 +3515,17 @@ class MainMenuScreen extends BaseScreen {
       return;
     }
 
-    // Player name typing
+    // Player name / hometown typing
     if (focusedField == 0) {
       if (kc == BACKSPACE && playerName.length() > 0)
         playerName = playerName.substring(0, playerName.length() - 1);
       else if (k != CODED && k != ENTER && k != RETURN && k != BACKSPACE && playerName.length() < 24)
         playerName += k;
+    } else if (focusedField == 1) {
+      if (kc == BACKSPACE && hometown.length() > 0)
+        hometown = hometown.substring(0, hometown.length() - 1);
+      else if (k != CODED && k != ENTER && k != RETURN && k != BACKSPACE && hometown.length() < 30)
+        hometown += k;
     }
   }
 
@@ -2856,6 +3575,8 @@ class Player {
   float              popularity          = 10;   // 0-100 general fame
   int                weeksInRelationship = 0;
   boolean            hasSocialManager    = false;
+  String             hometown            = "";
+  Parents            parents;
 
   // BitLife-style core life stats (0–100)
   float wellbeing  = 90;   // displayed as "HEALTH"
@@ -2886,6 +3607,7 @@ class Player {
     agent          = new AgentContract(AgentTier.NO_AGENT);
     awards         = new ArrayList<Award>();
     lifeEvents     = new ArrayList<String>();
+    parents        = new Parents();
 
     // Randomise starting life stats (genes)
     wellbeing = constrain(75 + random(-10, 20), 0, 100);
@@ -2966,6 +3688,9 @@ class Player {
       " | LegalStatus: "      + legalStatus +
       " | RelStatus: "        + family.statusDisplay() +
       " | Kids: "             + family.children.size() +
+      " | Hometown: "          + hometown +
+      " | Mom: "              + (parents != null ? parents.mom.name + "(" + (int)parents.mom.relationship + ")" : "N/A") +
+      " | Dad: "              + (parents != null ? parents.dad.name + "(" + (int)parents.dad.relationship + ")" : "N/A") +
       " | FamilyHappiness: "  + (int)family.familyHappiness + "/100" +
       " | Wellbeing: "        + (int)wellbeing + "/100" +
       " | Happiness: "        + (int)happiness + "/100" +
@@ -3187,8 +3912,9 @@ class Child {
 class Coach {
   String    name;
   CoachType type;
-  int       skill  = 60;
-  float     salary = 50_000;
+  int       skill      = 60;
+  float     salary     = 50_000;
+  float     coachBond  = 50;
 
   Coach(String n, CoachType t, int s) {
     name  = n;
@@ -3671,6 +4397,46 @@ class Award {
     }
   }
 }
+
+// ── Parents ────────────────────────────────────────────────
+class Parents {
+  Parent mom;
+  Parent dad;
+
+  Parents() {
+    String[] momNames = {"Maria","Elena","Sofia","Ana","Isabel","Carmen","Laura","Rosa","Julia","Paula",
+                         "Sarah","Jennifer","Emma","Olivia","Fatima","Yuki","Mei","Priya","Aisha","Linda"};
+    String[] dadNames = {"Carlos","Miguel","Antonio","David","Jorge","Luis","Roberto","Pedro","Fernando","Ricardo",
+                         "James","Robert","William","Michael","Omar","Hiroshi","Wei","Raj","Ahmed","John"};
+    mom = new Parent(momNames[(int)random(momNames.length)]);
+    dad = new Parent(dadNames[(int)random(dadNames.length)]);
+  }
+}
+
+class Parent {
+  String  name;
+  float   relationship;
+  boolean alive = true;
+
+  Parent(String n) {
+    name         = n;
+    relationship = constrain(70 + random(-20, 20), 30, 100);
+  }
+
+  String relationshipLabel() {
+    if (relationship >= 85) return "Very Close";
+    if (relationship >= 65) return "Good";
+    if (relationship >= 45) return "Distant";
+    return "Estranged";
+  }
+
+  color relationshipColor() {
+    if (relationship >= 75) return color(55, 185, 95);
+    if (relationship >= 50) return color(80, 140, 220);
+    if (relationship >= 30) return color(220, 160, 40);
+    return color(210, 65, 65);
+  }
+}
 // ============================================================
 // TRAINING SCREEN
 // ============================================================
@@ -3899,46 +4665,88 @@ class LegacyScreen extends BaseScreen {
     text("LEGACY", x, y);
     y += 50;
 
-    LegacyTier tier   = computeTier(p);
+    LegacyTier tier    = computeTier(p);
     color      tierCol = legacyColor(tier);
-    fill(tierCol, 40);
-    rect(x, y, 200, 36, 6);
+    fill(tierCol, 40); rect(x, y, 200, 36, 6);
     fill(tierCol); textSize(18); textAlign(CENTER, CENTER);
     text(tier.toString().replace("_", " "), x + 100, y + 18);
+
+    // Hometown badge
+    if (!p.hometown.isEmpty()) {
+      fill(theme.ACCENT2, 30); rect(x + 210, y, 160, 36, 6);
+      fill(theme.ACCENT2); textSize(11); textAlign(CENTER, CENTER);
+      text(p.hometown + ", " + p.nationality, x + 290, y + 18);
+    }
     y += 54;
 
+    // Career stats
     theme.drawCard(x, y, 500, 180);
-    drawLegacyStat("Grand Slams",  p.career.grandSlamTitles + "",                x +  20, y + 20);
-    drawLegacyStat("Total Titles", p.career.titlesWon + "",                      x + 180, y + 20);
-    drawLegacyStat("Best Ranking", "#" + p.career.worldRanking,                  x + 340, y + 20);
-    drawLegacyStat("Prize Money",  formatMoney(p.career.prizeMoney),             x +  20, y + 80);
-    drawLegacyStat("Wks at No.1",  p.career.weeksAtNumberOne + "",               x + 180, y + 80);
-    drawLegacyStat("Career Years", (engine.state.currentYear - 2024) + "",       x + 340, y + 80);
-
+    int proYears = engine.state.proCareerStartYear > 0 ? engine.state.currentYear - engine.state.proCareerStartYear : 0;
+    drawLegacyStat("Grand Slams",  p.career.grandSlamTitles + "",    x +  20, y + 20);
+    drawLegacyStat("Total Titles", p.career.titlesWon + "",          x + 180, y + 20);
+    drawLegacyStat("Best Ranking", "#" + p.career.worldRanking,      x + 340, y + 20);
+    drawLegacyStat("Prize Money",  formatMoney(p.career.prizeMoney), x +  20, y + 80);
+    drawLegacyStat("Wks at No.1",  p.career.weeksAtNumberOne + "",   x + 180, y + 80);
+    drawLegacyStat("Pro Years",    proYears + "",                     x + 340, y + 80);
     y += 200;
+
+    // Family section
+    sectionHeader("FAMILY & RELATIONSHIPS", x, y); y += 20;
+    theme.drawCard(x, y, 500, 120); float fy = y + 12;
+
+    // Parents
+    if (p.parents != null) {
+      fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, TOP);
+      text("Mom: " + p.parents.mom.name + " (" + p.parents.mom.relationshipLabel() + ")", x + 14, fy);
+      text("Dad: " + p.parents.dad.name + " (" + p.parents.dad.relationshipLabel() + ")", x + 240, fy);
+      fy += 20;
+    }
+    // Relationship
+    if (p.family.spouse != null) {
+      fill(theme.FAMILY); textSize(10); textAlign(LEFT, TOP);
+      text("♥ " + p.family.statusDisplay(), x + 14, fy); fy += 20;
+    }
+    // Kids
+    if (!p.family.children.isEmpty()) {
+      fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, TOP);
+      String kidsStr = "Children: ";
+      for (int i = 0; i < p.family.children.size(); i++) {
+        Child c = p.family.children.get(i);
+        kidsStr += c.name + " (age " + c.age + ")";
+        if (i < p.family.children.size() - 1) kidsStr += ", ";
+      }
+      text(kidsStr, x + 14, fy); fy += 20;
+    }
+    // Coach
+    if (p.coaches != null && p.coaches.length > 0) {
+      fill(theme.ACCENT2); textSize(10); textAlign(LEFT, TOP);
+      text("Coach: " + p.coaches[0].name + " (bond: " + (int)p.coaches[0].coachBond + "/100)", x + 14, fy);
+    }
+    y += 128;
+
+    // Career highlights
     sectionHeader("CAREER HIGHLIGHTS", x, y); y += 20;
     fill(theme.TEXT_DIM); textSize(12); textAlign(LEFT, TOP);
     ArrayList<String> hist = p.career.careerHistory;
-    int start = max(0, hist.size() - 8);
+    int start = max(0, hist.size() - 7);
     for (int i = start; i < hist.size(); i++) {
-      text("- " + hist.get(i), x, y);
-      y += 20;
+      text("- " + hist.get(i), x, y); y += 20;
     }
 
     y = 70; x = 580;
-    theme.drawCard(x, y, 560, 500);
+    theme.drawCard(x, y, 560, 540);
     fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, TOP);
     text("AI LEGACY NARRATIVE", x + 20, y + 16);
 
     if (engine.ai.isLoading) {
       fill(theme.ACCENT); textSize(13); textAlign(CENTER, CENTER);
-      text(engine.ai.getLoadingText(), x + 280, y + 250);
+      text(engine.ai.getLoadingText(), x + 280, y + 270);
     } else if (!narrative.isEmpty()) {
       fill(theme.TEXT); textSize(13); textAlign(LEFT, TOP);
       drawWrappedText(narrative, x + 20, y + 40, 520, 20);
     } else {
-      hoverGen = theme.isHover(hoverX, hoverY, x + 20, y + 220, 200, 40);
-      theme.drawButton(x + 20, y + 220, 200, 40, "GENERATE NARRATIVE", hoverGen);
+      hoverGen = theme.isHover(hoverX, hoverY, x + 20, y + 240, 200, 40);
+      theme.drawButton(x + 20, y + 240, 200, 40, "GENERATE NARRATIVE", hoverGen);
     }
   }
 
@@ -4025,8 +4833,7 @@ class MatchScreen extends BaseScreen {
     text("Total points earned: " + run.totalPoints() +
          " | Prize: " + formatMoney(run.totalPrize()), x, y);
   }
-}
-// ============================================================
+}// ============================================================
 // MATCH ENGINE & TOURNAMENT
 // ============================================================
 
