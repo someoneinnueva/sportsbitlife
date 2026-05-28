@@ -797,7 +797,7 @@ class CareerScreen extends BaseScreen {
 // Paste your Anthropic API key between the quotes below.
 // Leave empty to run on built-in procedural events only.
 // ============================================================
-final String CLAUDE_API_KEY = "REDACTED";  // ← paste your key here
+final String CLAUDE_API_KEY = "";  // ← paste your key here
 final String CLAUDE_MODEL   = "claude-sonnet-4-6";
 // ============================================================
 // ENUMS
