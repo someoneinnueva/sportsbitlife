@@ -3280,13 +3280,12 @@ class LifeScreen extends BaseScreen {
     // Event choices — computed from eventPanelY so render and click always agree
     if (engine.state.pendingEvent != null && engine.state.pendingEvent.choices != null) {
       ArrayList<EventChoice> choices = engine.state.pendingEvent.choices;
-      // choices start at eventPanelY + 140 inside drawEventPanel, each button 70px tall, 80px step
-      float cy = eventPanelY + 140;
+      float cy = eventPanelY + 116;
       for (int i = 0; i < min(choices.size(), 3); i++) {
-        if (theme.isHover(mx, my, MP_X + 12, cy, MP_W - 24, 70)) {
+        if (theme.isHover(mx, my, MP_X + 12, cy, MP_W - 24, 60)) {
           engine.applyChoice(choices.get(i)); return;
         }
-        cy += 80;
+        cy += 68;
       }
       return; // swallow all other clicks while event is pending
     }
@@ -4090,22 +4089,14 @@ class MainMenuScreen extends BaseScreen {
 
     formAlpha = lerp(formAlpha, 255, 0.04);
 
-    // Animated title
     titleY = lerp(titleY, 100, 0.06);
-    // Glow
-    for (int r = 350; r > 0; r -= 20) {
-      fill(255, 210, 60, map(r, 0, 350, 0, 4));
-      noStroke(); ellipse(width/2, titleY, r*2.2, r*0.8);
-    }
-    // SPORTLIFE
-    fill(255, 210, 60); textSize(64); textAlign(CENTER, CENTER);
+    // Title
+    fill(255, 210, 60); textSize(56); textAlign(CENTER, CENTER);
     text("SPORTLIFE", width/2, titleY);
-    // Tagline
-    fill(255, 255, 255, 160); textSize(13); textAlign(CENTER, CENTER);
-    text("YOUR CAREER  ·  YOUR CHOICES  ·  YOUR LEGACY", width/2, titleY + 50);
-    // Thin gold line accent
-    stroke(255, 210, 60, 100); strokeWeight(1);
-    line(width/2 - 220, titleY + 68, width/2 + 220, titleY + 68);
+    fill(200, 210, 230, 140); textSize(12); textAlign(CENTER, CENTER);
+    text("YOUR CAREER  ·  YOUR CHOICES  ·  YOUR LEGACY", width/2, titleY + 44);
+    stroke(255, 210, 60, 60); strokeWeight(1);
+    line(width/2 - 180, titleY + 60, width/2 + 180, titleY + 60);
     noStroke();
 
     fill(CLAUDE_API_KEY.isEmpty() ? theme.DANGER : theme.SUCCESS);
@@ -4132,18 +4123,14 @@ class MainMenuScreen extends BaseScreen {
   }
 
   void drawFormCard(float cx, float cy, float cw, float ch) {
-    // Card: dark navy bg with gold border
-    fill(20, 26, 46); stroke(255, 210, 60, 60); strokeWeight(1);
-    rect(cx, cy, cw, ch, 8);
-    noStroke();
-
-    // Header label
-    fill(255, 210, 60); textSize(11); textAlign(CENTER, TOP);
-    text("CREATE YOUR ATHLETE", cx + cw/2, cy + 18);
-    // Thin gold divider below header
-    stroke(255, 210, 60, 60); strokeWeight(1);
-    line(cx + 20, cy + 36, cx + cw - 20, cy + 36);
-    noStroke();
+    // Card
+    fill(14, 20, 36); stroke(38, 52, 80); strokeWeight(1);
+    rect(cx, cy, cw, ch, 8); noStroke();
+    // Header
+    fill(100, 120, 155); textSize(10); textAlign(LEFT, TOP);
+    text("CREATE YOUR ATHLETE", cx + 20, cy + 14);
+    stroke(38, 52, 80); strokeWeight(1);
+    line(cx + 20, cy + 30, cx + cw - 20, cy + 30); noStroke();
 
     float fy = cy + 40;
     float fw = cw - 40;
@@ -4159,29 +4146,17 @@ class MainMenuScreen extends BaseScreen {
     String[] sportNames  = {"Tennis", "Bball", "Soccer", "Golf", "Boxing"};
     for (int i = 0; i < sports.length; i++) {
       boolean sel = sports[i] == selectedSport;
-      boolean hov = theme.isHover(hoverX, hoverY, cx + 20 + i * (sw2 + 4), fy, sw2, 58);
+      boolean hov = theme.isHover(hoverX, hoverY, cx + 20 + i * (sw2 + 4), fy, sw2, 44);
       color sCol = theme.sportColor(sports[i]);
-      // Shadow
-      fill(0, 0, 0, 50); noStroke(); rect(cx + 22 + i * (sw2 + 4), fy + 3, sw2, 58, 10);
-      // Button body
-      if (sel) {
-        fill(sCol);
-      } else {
-        fill(hov ? color(red(sCol), green(sCol), blue(sCol), 60) : color(18, 24, 38));
-      }
-      stroke(sel || hov ? sCol : color(45, 62, 100)); strokeWeight(sel ? 2 : 1);
-      rect(cx + 20 + i * (sw2 + 4), fy, sw2, 58, 10); noStroke();
-      // Shine on selected
-      if (sel) { fill(255, 255, 255, 25); rect(cx + 22 + i * (sw2 + 4), fy + 2, sw2 - 4, 20, 8); }
-      // Emoji (large, upper area)
-      fill(sel ? color(10, 12, 25) : (hov ? sCol : theme.TEXT_DIM));
-      textSize(18); textAlign(CENTER, CENTER);
-      text(i < sportEmojis.length ? sportEmojis[i] : "?", cx + 20 + i * (sw2 + 4) + sw2 / 2, fy + 22);
-      // Sport name (lower area)
-      textSize(9); textAlign(CENTER, CENTER);
-      text(i < sportNames.length ? sportNames[i] : sports[i].toString(), cx + 20 + i * (sw2 + 4) + sw2 / 2, fy + 45);
+      fill(sel ? sCol : (hov ? color(24,32,52) : color(16,22,36)));
+      stroke(sel || hov ? sCol : color(38,52,80)); strokeWeight(sel ? 2 : 1);
+      rect(cx + 20 + i * (sw2 + 4), fy, sw2, 44, 6); noStroke();
+      fill(sel ? color(10,12,25) : (hov ? sCol : color(130,145,175)));
+      textSize(10); textAlign(CENTER, CENTER);
+      text((i < sportEmojis.length ? sportEmojis[i]+" " : "") + (i < sportNames.length ? sportNames[i] : sports[i].toString()),
+           cx + 20 + i * (sw2 + 4) + sw2 / 2, fy + 22);
     }
-    fy += 72;
+    fy += 58;
 
     // Player name
     drawField("PLAYER NAME", playerName, cx + 20, fy, fw, focusedField == 0 || hoverName);
@@ -4272,31 +4247,14 @@ class MainMenuScreen extends BaseScreen {
     }
     fy += 50;
 
-    // Pulsing start button
-    boolean hover = theme.isHover(hoverX, hoverY, cx + 20, fy, fw, 54);
+    // Start button
+    boolean hover = theme.isHover(hoverX, hoverY, cx + 20, fy, fw, 48);
     hoverStart = hover;
-    float pulse = 0.5 + 0.5 * sin(frameCount * 0.05);
-    color btnBase = color(255, 210, 60);
-    color btnGlow = lerpColor(color(200, 140, 0), color(255, 230, 100), pulse);
-    // Pulsing outer glow ring
-    float glowAlpha = 30 + 25 * sin(frameCount * 0.05);
-    fill(255, 210, 60, glowAlpha); noStroke();
-    rect(cx + 14, fy - 6, fw + 12, 66, 12);
-    // Drop shadow
-    fill(0, 0, 0, 60); noStroke(); rect(cx+22, fy+3, fw, 54, 8);
-    fill(hover ? btnGlow : color(30, 40, 15));
-    stroke(hover ? btnGlow : btnBase); strokeWeight(hover ? 3 : 1.5);
-    rect(cx+20, fy, fw, 54, 8); noStroke();
-    if (hover) { fill(255,255,255,35); rect(cx+22, fy+2, fw-4, 24, 6); }
-    fill(hover ? color(10,12,25) : btnBase);
-    textSize(16); textAlign(CENTER, CENTER);
-    text("BEGIN YOUR CAREER", cx+20+fw/2, fy+27);
-    // Arrow at right
-    textSize(16); textAlign(RIGHT, CENTER);
-    text("→", cx+20+fw-16, fy+27);
-    // Tagline below button
-    fill(theme.TEXT_DIM); textSize(10); textAlign(CENTER, TOP);
-    text("Age 16  ·  Pick Your Sport  ·  Shape Your Destiny", cx+20+fw/2, fy+58);
+    fill(hover ? color(255,230,80) : color(255,210,60));
+    noStroke(); rect(cx+20, fy, fw, 48, 6);
+    if (hover) { fill(255,255,255,30); rect(cx+22, fy+2, fw-4, 20, 4); }
+    fill(color(10,12,25)); textSize(15); textAlign(CENTER, CENTER);
+    text("BEGIN CAREER  →", cx+20+fw/2, fy+24);
 
     // Dropdown list (rendered last so it appears on top)
     if (dropdownOpen) {
@@ -4401,7 +4359,7 @@ class MainMenuScreen extends BaseScreen {
     float sw2 = (fw - (sports.length - 1) * 4) / sports.length;
     float sty2 = cy + 56;
     for (int i = 0; i < sports.length; i++) {
-      if (theme.isHover(mx, my, cx + 20 + i * (sw2 + 4), sty2, sw2, 58)) {
+      if (theme.isHover(mx, my, cx + 20 + i * (sw2 + 4), sty2, sw2, 44)) {
         selectedSport = sports[i];
         playStyle     = PlayStyle.ALL_COURT;
         return;
@@ -5904,7 +5862,7 @@ abstract class BaseScreen {
   void drawEventPanel(GameEvent evt, float x, float y, float w) {
     if (evt == null) return;
     int numChoices = (evt.choices != null) ? evt.choices.size() : 0;
-    float h = 160 + numChoices * 80;
+    float h = 130 + numChoices * 68;
 
     // Determine event color
     color stripe = color(255, 210, 60);
@@ -5934,7 +5892,7 @@ abstract class BaseScreen {
     text(typeIcon + "  " + (evt.type != null ? evt.type.replace("_"," ") : "EVENT"), x+24, y+27);
 
     // Headline — large and bold
-    fill(255, 255, 255); textSize(20); textAlign(LEFT, TOP);
+    fill(255, 255, 255); textSize(16); textAlign(LEFT, TOP);
     text(evt.headline == null ? "" : evt.headline, x+16, y+46);
 
     // Description
@@ -5947,49 +5905,43 @@ abstract class BaseScreen {
 
     // Choice buttons
     if (evt.choices != null) {
-      float cy = y + 140;
+      float cy = y + 116;
       color[] btnColors = {color(255,210,60), color(75,165,255), color(50,220,120)};
       for (int i = 0; i < min(evt.choices.size(), 3); i++) {
         EventChoice ch = evt.choices.get(i);
-        boolean hover = theme.isHover(hoverX, hoverY, x+12, cy, w-24, 70);
+        boolean hover = theme.isHover(hoverX, hoverY, x+12, cy, w-24, 60);
         color btnCol = btnColors[i % btnColors.length];
 
-        // Button shadow
-        fill(0, 0, 0, 60); noStroke(); rect(x+14, cy+3, w-24, 70, 8);
-
         // Button body
-        fill(hover ? btnCol : color(22, 30, 50));
-        stroke(hover ? btnCol : color(45, 62, 100, 180)); strokeWeight(hover ? 2 : 1);
-        rect(x+12, cy, w-24, 70, 8); noStroke();
-
-        // Shine
-        if (hover) { fill(255,255,255,25); rect(x+14, cy+2, w-28, 25, 6); }
+        fill(hover ? btnCol : color(20,28,48));
+        stroke(hover ? btnCol : color(38,52,80)); strokeWeight(hover ? 2 : 1);
+        rect(x+12, cy, w-24, 60, 6); noStroke();
+        if (hover) { fill(255,255,255,20); rect(x+14, cy+2, w-28, 20, 4); }
 
         // Number circle
-        fill(hover ? color(10,12,25) : btnCol, hover ? 255 : 180);
-        noStroke(); ellipse(x+34, cy+35, 28, 28);
+        fill(hover ? color(10,12,25) : btnCol, hover ? 255 : 160);
+        noStroke(); ellipse(x+32, cy+30, 24, 24);
         fill(hover ? color(10,12,25) : color(10,14,28));
-        textSize(13); textAlign(CENTER, CENTER);
-        text((i+1)+"", x+34, cy+35);
+        textSize(12); textAlign(CENTER, CENTER);
+        text((i+1)+"", x+32, cy+30);
 
-        // Choice label
-        fill(hover ? color(10,12,25) : color(220,230,255));
-        textSize(14); textAlign(LEFT, CENTER);
-        text(ch.label == null ? "" : ch.label, x+56, cy+20);
+        // Label
+        fill(hover ? color(10,12,25) : color(215,225,245));
+        textSize(13); textAlign(LEFT, CENTER);
+        text(ch.label == null ? "" : ch.label, x+50, cy+18);
 
-        // Choice description
-        fill(hover ? color(30,40,60) : color(110,135,175));
+        // Description
+        fill(hover ? color(30,40,60) : color(100,120,155));
         textSize(10); textAlign(LEFT, CENTER);
         String desc = ch.description == null ? "" : ch.description;
-        if (desc.length() > 60) desc = desc.substring(0,57)+"...";
-        text(desc, x+56, cy+44);
+        if (desc.length() > 65) desc = desc.substring(0,62)+"...";
+        text(desc, x+50, cy+40);
 
-        // Key hint
-        fill(hover ? color(10,12,25) : color(60,80,120));
-        textSize(9); textAlign(RIGHT, CENTER);
-        text("[" + (i+1) + "]", x+w-20, cy+35);
+        fill(hover ? color(20,30,50) : color(50,70,110));
+        textSize(8); textAlign(RIGHT, CENTER);
+        text("["+( i+1)+"]", x+w-16, cy+30);
 
-        cy += 80;
+        cy += 68;
       }
     }
   }
