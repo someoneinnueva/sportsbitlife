@@ -1,6 +1,1622 @@
+
+
 // ============================================================
-// AI SCENARIO ENGINE - Claude API Integration
+// sports.pde
 // ============================================================
+
+/**
+ * sports.pde — Main sketch entry point.
+ * All game classes live in their own .pde files in this sketch folder.
+ * Processing compiles all .pde files together automatically.
+ *
+ * File map:
+ *   UITheme.pde        — Design token system (Encapsulation, Composition)
+ *   OOP_Interfaces.pde — Interfaces & abstract classes (Abstraction, Inheritance, Patterns)
+ *   BaseScreen.pde     — Abstract base screen (Inheritance, Abstraction)
+ *   AIEngine.pde       — Claude AI + fallback events (Single Responsibility)
+ *   GameCore.pde       — GameEngine + patterns (Composition, Observer, Strategy)
+ *   Domain.pde         — Player domain classes (Encapsulation, Composition, Simulatable)
+ *   Simulation.pde     — Match/tournament engine (Strategy pattern — CalendarBuilders)
+ *   LifeScreen.pde     — Main gameplay screen (Inheritance, Polymorphism)
+ *   MainMenu.pde       — Menu screen with particle background (Inheritance)
+ *   Screens.pde        — All other screens (Inheritance, Polymorphism)
+ */
+
+// ── Imports ──────────────────────────────────────────────────
+import java.net.http.*;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+
+// ── Global configuration ──────────────────────────────────────
+// API key is loaded from data/api_key.txt — never hardcoded.
+// Copy data/config.example.json to data/api_key.txt and paste your key.
+// The game runs in procedural-only mode when the file is absent.
+String CLAUDE_API_KEY = "";
+final String CLAUDE_MODEL = "claude-sonnet-4-6";
+
+// ── Global singletons ─────────────────────────────────────────
+GameEngine engine;
+UITheme    theme;
+String     rivalNarCtx = "";
+
+// ── Entry point ───────────────────────────────────────────────
+void setup() {
+  size(1200, 800);
+  pixelDensity(1);
+  smooth(4);
+  textFont(createFont("Arial", 13));
+  // Load API key securely from data/api_key.txt (never committed)
+  String[] keyLines = loadStrings("api_key.txt");
+  if (keyLines != null && keyLines.length > 0 && !keyLines[0].trim().isEmpty()) {
+    CLAUDE_API_KEY = keyLines[0].trim();
+    println("[SportLife] API key loaded — AI events enabled.");
+  } else {
+    println("[SportLife] No api_key.txt found — running in procedural-only mode.");
+  }
+  theme  = new UITheme();
+  engine = new GameEngine();
+  engine.start();
+}
+
+void draw()          { background(theme.BG); engine.render(); }
+void keyPressed()    { engine.processKey(key, keyCode); }
+void mousePressed()  { engine.processMouse(mouseX, mouseY); }
+void mouseReleased() { engine.processMouseReleased(mouseX, mouseY); }
+void mouseMoved()    { engine.processMouseMoved(mouseX, mouseY); }
+void mouseDragged()  { engine.processMouseMoved(mouseX, mouseY); }
+
+// ══════════════════════════════════════════════════════════════
+// ENUMS — shared across all files
+// ══════════════════════════════════════════════════════════════
+enum Sport              { TENNIS, BASKETBALL, SOCCER, GOLF, BOXING }
+enum Surface            { HARD, CLAY, GRASS, INDOOR_HARD }
+enum PlayStyle          { AGGRESSIVE_BASELINER, COUNTER_PUNCHER, SERVE_VOLLEY, ALL_COURT }
+enum TournamentTier     { GRAND_SLAM, MASTERS_1000, ATP_500, ATP_250, CHALLENGER }
+enum InjuryStatus       { HEALTHY, DAY_TO_DAY, OUT_WEEKS, OUT_MONTHS }
+enum RoundName          { R128, R64, R32, R16, QF, SF, F }
+enum CoachType          { HEAD_COACH, FITNESS_TRAINER, MENTAL_COACH, TECHNICAL_COACH, NUTRITION_COACH }
+enum CareerPhase        { JUNIOR, RISING, PRIME, VETERAN, DECLINING }
+enum LegacyTier         { JOURNEYMAN, SOLID_PRO, STAR, LEGEND, GOAT }
+enum ScreenID           { MAIN_MENU, CAREER, MATCH, TRAINING, WORLD_RANKINGS, LIFESTYLE, LEGACY, MARKET }
+enum EventType          { CAREER_CHOICE, INJURY, RIVAL, MEDIA, FAMILY, TRAINING_RESULT, FINANCIAL, LEGAL, SOCIAL, RANDOM_LIFE }
+enum LifestyleTier      { FRUGAL, COMFORTABLE, LUXURY, LAVISH }
+enum RelationshipStatus { SINGLE, DATING, ENGAGED, MARRIED, SEPARATED, DIVORCED }
+enum PropertyType       { APARTMENT, CONDO, HOUSE, MANSION, BEACH_HOUSE, PENTHOUSE }
+enum VehicleType        { ECONOMY_CAR, SPORTS_CAR, LUXURY_CAR, SUPERCAR, PRIVATE_JET }
+enum InvestmentType     { STOCKS, CRYPTO, BONDS, REAL_ESTATE_FUND, BUSINESS_VENTURE }
+enum MentalState        { THRIVING, STABLE, STRESSED, ANXIOUS, DEPRESSED, BURNED_OUT }
+enum SocialTier         { UNKNOWN, LOCAL_CELEB, NATIONAL_STAR, GLOBAL_ICON, MEGASTAR }
+enum AgentTier          { NO_AGENT, BASIC_AGENT, MID_TIER, ELITE, SUPERAGENT }
+enum AddictionLevel     { NONE, MILD, MODERATE, SEVERE }
+enum LegalStatus        { CLEAN, INVESTIGATED, CHARGED, SETTLED, CONVICTED }
+enum AwardType          { PLAYER_OF_YEAR, BEST_NEWCOMER, COMEBACK_PLAYER, MVP, HUMANITARIAN, SPORTSMANSHIP }
+enum MarketTab          { PROPERTY, VEHICLES, INVESTMENTS, BUSINESS, AGENT }
+enum LifeTab            { OVERVIEW, MENTAL_HEALTH, RELATIONSHIPS, SOCIAL_MEDIA, LEGAL, NUTRITION }
+enum ActivityCategory   { CAREER, TRAINING, LOVE, HEALTH, ASSETS, SOCIAL }
+enum SeasonOutcome      { CHAMPION, STRONG, AVERAGE, DISAPPOINTING, INJURY_RIDDLED }
+enum LifePhase          { CHILDHOOD, EARLY_SCHOOL, TEEN, UNIVERSITY, PRO, RETIRED }
+
+// ── Layout helpers ────────────────────────────────────────────
+/** Rect — immutable bounding box for layout and hit-testing. OOP: Encapsulation */
+class Rect { // OOP: Encapsulation
+  float x, y, w, h;
+  Rect(float x, float y, float w, float h) { this.x=x; this.y=y; this.w=w; this.h=h; }
+  boolean contains(float mx, float my) { return mx>=x && mx<=x+w && my>=y && my<=y+h; }
+  float cx() { return x+w/2; }
+  float cy() { return y+h/2; }
+  float right()  { return x+w; }
+  float bottom() { return y+h; }
+  Rect pad(float p) { return new Rect(x-p,y-p,w+p*2,h+p*2); }
+}
+
+// ============================================================
+// UITheme.pde
+// ============================================================
+
+/**
+ * UITheme — Central design token system and component drawing library.
+ * OOP role: Encapsulation (ColorPalette, ComponentStyle), Composition (UITheme uses both)
+ * Collaborators: All Screen classes, BaseScreen
+ */
+
+// =============================================================================
+// ColorPalette  // OOP: Encapsulation — all raw color tokens in one place
+// =============================================================================
+class ColorPalette {
+
+  // Background scale
+  color BG        = color(10, 11, 15);      // #0A0B0F
+  color SURFACE_1 = color(19, 21, 28);      // #13151C  — cards
+  color SURFACE_2 = color(28, 31, 42);      // #1C1F2A  — raised
+  color SURFACE_3 = color(37, 40, 54);      // #252836  — hover/active
+
+  // Borders (very subtle)
+  color BORDER    = color(255, 255, 255, 15); // rgba 6%
+  color BORDER_EM = color(255, 255, 255, 30); // rgba 12% emphasis
+
+  // Accent
+  color GOLD   = color(245, 197, 24);  // #F5C518
+  color BLUE   = color(74, 158, 255);  // #4A9EFF
+  color GREEN  = color(46, 204, 138);  // #2ECC8A
+  color RED    = color(255, 77, 77);   // #FF4D4D
+  color PURPLE = color(155, 127, 255); // #9B7FFF
+  color PINK   = color(255, 107, 174); // #FF6BAE
+  color ORANGE = color(255, 122, 48);  // #FF7A30
+  color TEAL   = color(0, 212, 200);   // #00D4C8
+
+  // Text
+  color TEXT_PRI   = color(238, 240, 245); // #EEF0F5
+  color TEXT_SEC   = color(139, 147, 168); // #8B93A8
+  color TEXT_MUTED = color(85, 93, 114);   // #555D72
+
+  // ── Sport accent lookup ─────────────────────────────────────────────────────
+  color accentForSport(Sport s) {
+    switch (s) {
+      case BASKETBALL: return ORANGE;
+      case SOCCER:     return GREEN;
+      case GOLF:       return TEAL;
+      case BOXING:     return RED;
+      case TENNIS:     return GOLD;
+      default:         return GOLD;
+    }
+  }
+
+  // ── Severity color: GREEN (0) → ORANGE (0.5) → RED (1.0) ───────────────────
+  color severityColor(float t) {
+    t = constrain(t, 0, 1);
+    if (t <= 0.5) {
+      return lerpColor(GREEN, ORANGE, t * 2.0);
+    } else {
+      return lerpColor(ORANGE, RED, (t - 0.5) * 2.0);
+    }
+  }
+
+  // ── lerpColor wrapper ───────────────────────────────────────────────────────
+  color gradientBetween(color a, color b, float t) {
+    return lerpColor(a, b, constrain(t, 0, 1));
+  }
+}
+
+// =============================================================================
+// ComponentStyle — // OOP: Encapsulation — all sizing/spacing constants
+// =============================================================================
+class ComponentStyle {
+  int   CARD_RADIUS          = 12;
+  int   CARD_RADIUS_SM       = 8;
+  int   CARD_PADDING         = 16;
+  int   CARD_GAP             = 8;
+  int   SECTION_GAP          = 24;
+  int   COL_GAP              = 12;
+  int   BAR_HEIGHT           = 6;
+  int   BAR_HEIGHT_LG        = 10;
+  int   PILL_HEIGHT          = 22;
+  float FATIGUE_DANGER       = 70.0;
+  float STAT_GLOW_THRESHOLD  = 75.0;
+}
+
+// =============================================================================
+// UITheme // OOP: Composition — UITheme is composed of ColorPalette + ComponentStyle
+// =============================================================================
+class UITheme {
+
+  ColorPalette   pal = new ColorPalette();
+  ComponentStyle sty = new ComponentStyle();
+
+  // Convenience aliases (delegate to pal)
+  color BG, PANEL, PANEL_2, PANEL_3, BORDER, BORDER_LT;
+  color ACCENT, ACCENT2, SUCCESS, DANGER, WARNING;
+  color TEXT, TEXT_DIM, TEXT_GOLD;
+  color GOLD, BLUE, GREEN, RED, PURPLE, PINK, ORANGE, TEAL, FAMILY;
+
+  int TITLE, HEADER, BODY, SMALL, MICRO;
+
+  // ── Constructor: wire all aliases to palette fields ────────────────────────
+  UITheme() {
+    BG       = pal.BG;        PANEL    = pal.SURFACE_1; PANEL_2  = pal.SURFACE_2;
+    PANEL_3  = pal.SURFACE_3; BORDER   = pal.BORDER;    BORDER_LT= pal.BORDER_EM;
+    ACCENT   = pal.GOLD;      ACCENT2  = pal.BLUE;      SUCCESS  = pal.GREEN;
+    DANGER   = pal.RED;       WARNING  = pal.ORANGE;    TEXT     = pal.TEXT_PRI;
+    TEXT_DIM = pal.TEXT_SEC;  TEXT_GOLD= pal.GOLD;      GOLD     = pal.GOLD;
+    BLUE     = pal.BLUE;      GREEN    = pal.GREEN;      RED      = pal.RED;
+    PURPLE   = pal.PURPLE;    PINK     = pal.PINK;       ORANGE   = pal.ORANGE;
+    TEAL     = pal.TEAL;      FAMILY   = pal.PINK;
+    TITLE = 28; HEADER = 18; BODY = 13; SMALL = 11; MICRO = 9;
+  }
+
+  // ===========================================================================
+  // CARD DRAWING METHODS
+  // ===========================================================================
+
+  // ── Surface card: flat, subtle border, inner top highlight ─────────────────
+  void drawSurfaceCard(float x, float y, float w, float h) {
+    fill(PANEL); stroke(BORDER); strokeWeight(1);
+    rect(x, y, w, h, sty.CARD_RADIUS);
+    noStroke();
+    // Inner top highlight — 1px shimmer
+    fill(255, 255, 255, 8);
+    rect(x + 1, y + 1, w - 2, 3, sty.CARD_RADIUS, sty.CARD_RADIUS, 0, 0);
+  }
+
+  // ── Raised card: drop shadow + lighter surface + emphasis border ────────────
+  void drawRaisedCard(float x, float y, float w, float h) {
+    // Drop shadow
+    fill(0, 0, 0, 30); noStroke();
+    rect(x + 2, y + 3, w, h, 12);
+    // Body
+    fill(PANEL_2); stroke(BORDER_LT); strokeWeight(1);
+    rect(x, y, w, h, 12);
+    noStroke();
+  }
+
+  // ── Accent card: raised card + left color stripe ────────────────────────────
+  void drawAccentCard(float x, float y, float w, float h, color accent) {
+    drawRaisedCard(x, y, w, h);
+    // Left color stripe
+    fill(accent); noStroke();
+    rect(x, y + 10, 3, h - 20, 2);
+  }
+
+  // ── Event card: raised card + top accent bar + top glow wash ───────────────
+  void drawEventCard(float x, float y, float w, float h, color accent) {
+    drawRaisedCard(x, y, w, h);
+    // Top accent bar
+    fill(accent, 220); noStroke();
+    rect(x, y, w, 4, 12, 12, 0, 0);
+    // Top glow wash
+    fill(accent, 20);
+    rect(x, y, w, 40, 12);
+  }
+
+  // ── Backward-compatible overloads ──────────────────────────────────────────
+  void drawCard(float x, float y, float w, float h) {
+    drawRaisedCard(x, y, w, h);
+  }
+
+  void drawCard(float x, float y, float w, float h, boolean highlighted) {
+    if (highlighted) {
+      // Shadow
+      fill(0, 0, 0, 30); noStroke();
+      rect(x + 2, y + 3, w, h, 12);
+      // Highlighted body — gold border
+      fill(PANEL_2); stroke(GOLD, 200); strokeWeight(1);
+      rect(x, y, w, h, 12);
+      noStroke();
+    } else {
+      drawRaisedCard(x, y, w, h);
+    }
+  }
+
+  // ===========================================================================
+  // STAT BAR METHODS
+  // ===========================================================================
+
+  // ── Standard stat bar with glowing cap dot ─────────────────────────────────
+  void drawStatBar(float x, float y, float w, float h, float value, float max, color col) {
+    // Track
+    fill(pal.SURFACE_2); noStroke();
+    rect(x, y, w, h, h / 2);
+
+    float filled = map(constrain(value, 0, max), 0, max, 0, w);
+    if (filled > 0) {
+      // Fill
+      fill(col);
+      rect(x, y, filled, h, h / 2);
+
+      // Cap dot + glow
+      float capX = x + filled;
+      float capY = y + h / 2;
+      fill(col, 60);
+      ellipse(capX, capY, h * 2.5, h * 2.5); // glow halo
+      fill(col);
+      ellipse(capX, capY, h, h);              // solid dot
+    }
+    // Caller handles value label
+  }
+
+  // ── Glow bar: ambient glow behind, then stat bar ───────────────────────────
+  void drawGlowBar(float x, float y, float w, float h, float value, float max, color col) {
+    fill(col, 15); noStroke();
+    rect(x - 2, y - 2, w + 4, h + 4, (h + 4) / 2);
+    drawStatBar(x, y, w, h, value, max, col);
+  }
+
+  // ── Mini stat: label left, value right, bar below ──────────────────────────
+  void drawMiniStat(String label, float value, float maxVal, color col, float x, float y, float w) {
+    // Label (left)
+    fill(pal.TEXT_SEC); textSize(MICRO); textAlign(LEFT, TOP);
+    text(label, x, y);
+    // Value (right, integer)
+    fill(col); textAlign(RIGHT, TOP);
+    text(int(value), x + w, y);
+    // Bar below (h=4)
+    float barY = y + MICRO + 2;
+    drawStatBar(x, barY, w, 4, value, maxVal, col);
+  }
+
+  // ===========================================================================
+  // BUTTON METHODS
+  // ===========================================================================
+
+  // ── Primary button: gold on hover ──────────────────────────────────────────
+  boolean drawButton(float x, float y, float w, float h, String label, boolean hover) {
+    if (hover) {
+      fill(GOLD); noStroke();
+      rect(x, y, w, h, 6);
+      fill(0, 0, 0, 160); textSize(BODY); textAlign(CENTER, CENTER);
+      text(label, x + w / 2, y + h / 2);
+    } else {
+      fill(pal.SURFACE_2); stroke(pal.BORDER_EM); strokeWeight(1);
+      rect(x, y, w, h, 6); noStroke();
+      fill(pal.TEXT_PRI); textSize(BODY); textAlign(CENTER, CENTER);
+      text(label, x + w / 2, y + h / 2);
+    }
+    return hover;
+  }
+
+  // ── Danger button: red on hover ────────────────────────────────────────────
+  boolean drawDangerButton(float x, float y, float w, float h, String label, boolean hover) {
+    if (hover) {
+      fill(DANGER); noStroke();
+      rect(x, y, w, h, 6);
+      fill(255, 235, 235); textSize(BODY); textAlign(CENTER, CENTER);
+      text(label, x + w / 2, y + h / 2);
+    } else {
+      fill(color(55, 18, 18)); stroke(color(90, 28, 28)); strokeWeight(1);
+      rect(x, y, w, h, 6); noStroke();
+      fill(color(210, 100, 100)); textSize(BODY); textAlign(CENTER, CENTER);
+      text(label, x + w / 2, y + h / 2);
+    }
+    return hover;
+  }
+
+  // ── Sport-colored selection button ─────────────────────────────────────────
+  void drawSportButton(float x, float y, float w, float h, String label, boolean selected, boolean hover, color col) {
+    if (selected) {
+      fill(col); noStroke();
+      rect(x, y, w, h, 10);
+      fill(0, 0, 0, 160); textSize(BODY); textAlign(CENTER, CENTER);
+      text(label, x + w / 2, y + h / 2);
+    } else if (hover) {
+      fill(pal.SURFACE_2); stroke(col); strokeWeight(1);
+      rect(x, y, w, h, 10); noStroke();
+      fill(pal.TEXT_SEC); textSize(BODY); textAlign(CENTER, CENTER);
+      text(label, x + w / 2, y + h / 2);
+    } else {
+      fill(pal.SURFACE_2); stroke(pal.BORDER); strokeWeight(1);
+      rect(x, y, w, h, 10); noStroke();
+      fill(pal.TEXT_SEC); textSize(BODY); textAlign(CENTER, CENTER);
+      text(label, x + w / 2, y + h / 2);
+    }
+  }
+
+  // ===========================================================================
+  // BADGE / PILL METHODS
+  // ===========================================================================
+
+  // ── Rounded badge pill ─────────────────────────────────────────────────────
+  void drawBadge(String label, float x, float y, color bg, color fg) {
+    textSize(MICRO);
+    float bw = textWidth(label) + 14;
+    fill(bg); noStroke();
+    rect(x, y, bw, sty.PILL_HEIGHT, sty.PILL_HEIGHT / 2);
+    fill(fg); textAlign(CENTER, CENTER);
+    text(label, x + bw / 2, y + sty.PILL_HEIGHT / 2);
+  }
+
+  // ── Gold badge shortcut ────────────────────────────────────────────────────
+  void drawGoldBadge(String label, float x, float y) {
+    drawBadge(label, x, y, color(80, 60, 0), GOLD);
+  }
+
+  // ── Icon circle with outer glow ring ──────────────────────────────────────
+  void drawIconCircle(String emoji, float cx, float cy, float r, color bg) {
+    // Outer glow ring
+    fill(bg, 20); noStroke();
+    ellipse(cx, cy, r * 2.4, r * 2.4);
+    // Inner fill
+    fill(bg, 60);
+    ellipse(cx, cy, r * 2, r * 2);
+    // Emoji centered
+    fill(255); textSize(r * 0.9); textAlign(CENTER, CENTER);
+    text(emoji, cx, cy);
+  }
+
+  // ── XP / progress bar ─────────────────────────────────────────────────────
+  void drawXPBar(float x, float y, float w, float h, float pct, color col) {
+    // Track
+    fill(pal.SURFACE_2); noStroke();
+    rect(x, y, w, h, h / 2);
+    if (pct > 0.0) {
+      float filled = w * constrain(pct, 0, 1);
+      fill(col);
+      rect(x, y, filled, h, h / 2);
+    }
+  }
+
+  // ── Horizontal divider line ────────────────────────────────────────────────
+  void drawDivider(float x, float y, float w) {
+    stroke(pal.BORDER_EM); strokeWeight(1);
+    line(x, y, x + w, y);
+    noStroke();
+  }
+
+  // ── Dot grid background ────────────────────────────────────────────────────
+  void drawDotGrid() {
+    int spacing = 28;
+    noStroke();
+    for (int gx = spacing; gx < width; gx += spacing) {
+      for (int gy = 56; gy < height; gy += spacing) {
+        fill(40, 50, 80, 50);
+        ellipse(gx, gy, 2, 2);
+      }
+    }
+  }
+
+  // ===========================================================================
+  // UTILITY
+  // ===========================================================================
+
+  // ── Hit-test helper ────────────────────────────────────────────────────────
+  boolean isHover(float mx, float my, float x, float y, float w, float h) {
+    return mx >= x && mx <= x + w && my >= y && my <= y + h;
+  }
+
+  // ── Sport color lookup — delegates to ColorPalette ─────────────────────────
+  color sportColor(Sport s) {
+    return pal.accentForSport(s);
+  }
+}
+
+
+// ============================================================
+// OOP_Interfaces.pde
+// ============================================================
+
+/**
+ * OOP_Interfaces — All interfaces, abstract classes, and design patterns.
+ * OOP role: Abstraction (interfaces), Inheritance (abstract classes),
+ *           Polymorphism (abstract methods), Observer, Factory, Strategy patterns
+ * Collaborators: GameEngine, AIScenarioEngine, LifeScreen, Player
+ */
+
+// ============================================================
+// SECTION 1 — Interfaces                // OOP: Abstraction
+// ============================================================
+
+/**
+ * Renderable — anything that can draw itself given a theme and bounds.
+ * OOP role: Abstraction (interface)
+ */
+interface Renderable { // OOP: Abstraction
+  void render(UITheme theme, float x, float y, float w);
+}
+
+/**
+ * Simulatable — anything that advances week-by-week in game time.
+ * OOP role: Abstraction (interface)
+ */
+interface Simulatable { // OOP: Abstraction
+  void simulateWeek(Player p, int year);
+}
+
+/**
+ * Persistable — anything that can be serialized to/from a string list.
+ * OOP role: Abstraction (interface)
+ */
+interface Persistable { // OOP: Abstraction
+  void serialize(ArrayList<String> out);
+  void deserialize(ArrayList<String> in);
+}
+
+/**
+ * GameEventListener — Observer pattern receiver.
+ * OOP role: Abstraction (interface) + Observer pattern
+ */
+interface GameEventListener { // OOP: Observer pattern
+  void onGameEvent(GameEvent evt);
+}
+
+// ============================================================
+// SECTION 2 — Abstract class LifeEvent hierarchy
+//             OOP: Inheritance + Polymorphism
+// ============================================================
+
+/**
+ * LifeEvent — Abstract base for all typed life events.
+ * OOP role: Inheritance (abstract base), Polymorphism (subclasses override accent/label)
+ * Collaborators: AIScenarioEngine, GameEventFactory, drawEventPanel
+ */
+abstract class LifeEvent { // OOP: Inheritance
+  String headline;
+  String description;
+  ArrayList<EventChoice> choices;
+  int createdYear;
+
+  LifeEvent(String headline, String description) {
+    this.headline    = headline;
+    this.description = description;
+    this.choices     = new ArrayList<EventChoice>();
+    this.createdYear = 0;
+  }
+
+  abstract color getAccentColor();   // OOP: Polymorphism
+  abstract String getTypeLabel();    // OOP: Polymorphism
+  abstract EventType getEventType(); // OOP: Polymorphism
+
+  GameEvent toGameEvent() {
+    GameEvent g   = new GameEvent();
+    g.headline    = headline;
+    g.description = description;
+    g.choices     = choices;
+    g.eventType   = getEventType();
+    return g;
+  }
+}
+
+class CareerLifeEvent extends LifeEvent { // OOP: Inheritance
+  CareerLifeEvent(String h, String d) { super(h, d); }
+  color getAccentColor()  { return color(245, 197, 24); }
+  String getTypeLabel()   { return "CAREER"; }
+  EventType getEventType(){ return EventType.CAREER_CHOICE; }
+}
+
+class RomanceLifeEvent extends LifeEvent { // OOP: Inheritance
+  RomanceLifeEvent(String h, String d) { super(h, d); }
+  color getAccentColor()  { return color(255, 107, 174); }
+  String getTypeLabel()   { return "ROMANCE"; }
+  EventType getEventType(){ return EventType.FAMILY; }
+}
+
+class HealthLifeEvent extends LifeEvent { // OOP: Inheritance
+  HealthLifeEvent(String h, String d) { super(h, d); }
+  color getAccentColor()  { return color(255, 77, 77); }
+  String getTypeLabel()   { return "HEALTH"; }
+  EventType getEventType(){ return EventType.INJURY; }
+}
+
+class LegalLifeEvent extends LifeEvent { // OOP: Inheritance
+  LegalLifeEvent(String h, String d) { super(h, d); }
+  color getAccentColor()  { return color(255, 122, 48); }
+  String getTypeLabel()   { return "LEGAL"; }
+  EventType getEventType(){ return EventType.LEGAL; }
+}
+
+class FinancialLifeEvent extends LifeEvent { // OOP: Inheritance
+  FinancialLifeEvent(String h, String d) { super(h, d); }
+  color getAccentColor()  { return color(46, 204, 138); }
+  String getTypeLabel()   { return "FINANCIAL"; }
+  EventType getEventType(){ return EventType.FINANCIAL; }
+}
+
+class SocialLifeEvent extends LifeEvent { // OOP: Inheritance
+  SocialLifeEvent(String h, String d) { super(h, d); }
+  color getAccentColor()  { return color(155, 127, 255); }
+  String getTypeLabel()   { return "SOCIAL"; }
+  EventType getEventType(){ return EventType.SOCIAL; }
+}
+
+class FamilyLifeEvent extends LifeEvent { // OOP: Inheritance
+  FamilyLifeEvent(String h, String d) { super(h, d); }
+  color getAccentColor()  { return color(255, 107, 174); }
+  String getTypeLabel()   { return "FAMILY"; }
+  EventType getEventType(){ return EventType.FAMILY; }
+}
+
+// ============================================================
+// SECTION 3 — Abstract class FinancialTransaction hierarchy
+//             OOP: Inheritance
+// ============================================================
+
+/**
+ * FinancialTransaction — Abstract base for all financial operations.
+ * OOP role: Inheritance
+ */
+abstract class FinancialTransaction { // OOP: Inheritance
+  String _name;
+  float  _purchasePrice;
+  int    _yearPurchased;
+
+  FinancialTransaction(String name, float price, int year) {
+    _name          = name;
+    _purchasePrice = price;
+    _yearPurchased = year;
+  }
+
+  abstract float  getWeeklyCost();
+  abstract float  getTotalValue();
+  abstract String getSummaryLabel();
+}
+
+class PropertyTransaction extends FinancialTransaction { // OOP: Inheritance
+  float _weeklyUpkeep;
+  float _weeklyMortgage;
+  float _currentValue;
+
+  PropertyTransaction(String n, float price, float upkeep, float mortgage, float val, int yr) {
+    super(n, price, yr);
+    _weeklyUpkeep   = upkeep;
+    _weeklyMortgage = mortgage;
+    _currentValue   = val;
+  }
+
+  float  getWeeklyCost()   { return _weeklyUpkeep + _weeklyMortgage; }
+  float  getTotalValue()   { return _currentValue; }
+  String getSummaryLabel() { return "Property: " + _name; }
+}
+
+class InvestmentTransaction extends FinancialTransaction { // OOP: Inheritance
+  float _currentValue;
+  float _weeklyReturn;
+
+  InvestmentTransaction(String n, float invested, float currentVal, float wkReturn, int yr) {
+    super(n, invested, yr);
+    _currentValue = currentVal;
+    _weeklyReturn = wkReturn;
+  }
+
+  float  getWeeklyCost()   { return -_weeklyReturn; } // negative = income
+  float  getTotalValue()   { return _currentValue; }
+  String getSummaryLabel() { return "Investment: " + _name; }
+}
+
+// ============================================================
+// SECTION 4 — Abstract class Activity hierarchy
+//             OOP: Polymorphism
+// ============================================================
+
+/**
+ * Activity — Abstract base for all player activities (training, social, career).
+ * OOP role: Polymorphism (each subclass overrides execute)
+ * Collaborators: LifeScreen, Player, GameState
+ */
+abstract class Activity { // OOP: Polymorphism
+  String           _label;
+  String           _description;
+  String           _icon;
+  ActivityCategory _category;
+
+  Activity(String label, String desc, String icon, ActivityCategory cat) {
+    _label       = label;
+    _description = desc;
+    _icon        = icon;
+    _category    = cat;
+  }
+
+  abstract void execute(Player p, GameState state); // OOP: Polymorphism
+
+  String           getLabel()       { return _label; }
+  String           getDescription() { return _description; }
+  String           getIcon()        { return _icon; }
+  ActivityCategory getCategory()    { return _category; }
+}
+
+class TrainingActivity extends Activity { // OOP: Polymorphism
+  String _statName;
+  float  _intensity;
+
+  // Default injury body parts used when sport config is unavailable
+  String[] _defaultInjuryParts = {
+    "shoulder", "knee", "ankle", "wrist", "back", "hamstring", "hip"
+  };
+
+  TrainingActivity(String label, String stat, float intensity) {
+    super(label, "Train " + stat + " at " + ((int)intensity) + "%", "🏋", ActivityCategory.TRAINING);
+    _statName  = stat;
+    _intensity = intensity;
+  }
+
+  void execute(Player p, GameState state) {
+    // Apply training gains through the progression system
+    TrainingSession sess = new TrainingSession(_statName, _intensity);
+    p.progression.applyTrainingGains(sess);
+
+    // Determine injury parts: prefer sport config if available, else use defaults
+    String[] parts = _defaultInjuryParts;
+    if (state != null && state.sportConfig != null) {
+      SportConfig cfg = state.sportConfig;
+      // SportConfig.statNames serves as body-part proxies for injury location
+      if (cfg.statNames != null && cfg.statNames.length > 0) {
+        parts = cfg.statNames;
+      }
+    }
+
+    // Roll for injury based on fatigue and session intensity
+    float risk = p.health.injuryRisk(p.form, _intensity / 100.0);
+    if (random(1) < risk) {
+      String part = parts[(int)random(parts.length)];
+      p.health.applyInjury(part, (int)random(1, 6));
+    }
+  }
+}
+
+class RestActivity extends Activity { // OOP: Polymorphism
+  RestActivity() {
+    super("Rest & Recover", "Take a week off to recover fully", "😴", ActivityCategory.HEALTH);
+  }
+
+  void execute(Player p, GameState state) {
+    p.form.applyRestWeek();
+  }
+}
+
+class SocialActivity extends Activity { // OOP: Polymorphism
+  String _effectType;
+
+  SocialActivity(String label, String desc, String icon, String effectType) {
+    super(label, desc, icon, ActivityCategory.SOCIAL);
+    _effectType = effectType;
+  }
+
+  void execute(Player p, GameState state) {
+    if (_effectType.equals("fame")) {
+      // Grow social media following
+      int gain = (int)random(5000, 50000);
+      p.socialMedia.followers += gain;
+      p.socialMedia.updateTier();
+    } else if (_effectType.equals("media")) {
+      p.reputation.applyPositive(random(3, 10));
+    } else if (_effectType.equals("charity")) {
+      p.reputation.applyPositive(random(5, 15));
+    }
+  }
+}
+
+// ============================================================
+// SECTION 5 — Design Patterns
+// ============================================================
+
+// ------------------------------------------------------------
+// Factory Pattern — GameEventFactory
+// OOP role: Factory pattern, Single Responsibility
+// ------------------------------------------------------------
+
+/**
+ * GameEventFactory — Factory pattern for creating typed life events.
+ * OOP role: Factory pattern, Single Responsibility
+ */
+class GameEventFactory { // OOP: Factory pattern
+
+  CareerLifeEvent createTrainingEvent() {
+    CareerLifeEvent e = new CareerLifeEvent(
+      "Training Decision",
+      "How do you approach this week's training?"
+    );
+
+    EventChoice c1 = new EventChoice();
+    c1.label               = "Push Hard";
+    c1.description         = "Maximum intensity.";
+    c1.fatigueEffect       = 15;
+    c1.confidenceEffect    = 5;
+    c1.rankingPointsEffect = 20;
+    e.choices.add(c1);
+
+    EventChoice c2 = new EventChoice();
+    c2.label               = "Moderate";
+    c2.description         = "Steady progress.";
+    c2.fatigueEffect       = 7;
+    c2.confidenceEffect    = 3;
+    c2.rankingPointsEffect = 10;
+    e.choices.add(c2);
+
+    EventChoice c3 = new EventChoice();
+    c3.label               = "Rest Week";
+    c3.description         = "Recovery first.";
+    c3.fatigueEffect       = -20;
+    c3.rankingPointsEffect = -5;
+    c3.happinessEffect     = 8;
+    e.choices.add(c3);
+
+    return e;
+  }
+
+  RomanceLifeEvent createRomanceEvent(String partnerName) {
+    RomanceLifeEvent e = new RomanceLifeEvent(
+      "Someone Special",
+      "You've been spending time with " + partnerName + ". Something is developing."
+    );
+
+    EventChoice c1 = new EventChoice();
+    c1.label              = "Ask Them Out";
+    c1.description        = "Take the leap.";
+    c1.happinessEffect    = 15;
+    c1.relationshipEffect = 20;
+    e.choices.add(c1);
+
+    EventChoice c2 = new EventChoice();
+    c2.label               = "Stay Friends";
+    c2.description         = "Focus on career.";
+    c2.happinessEffect     = 5;
+    c2.rankingPointsEffect = 10;
+    e.choices.add(c2);
+
+    EventChoice c3 = new EventChoice();
+    c3.label               = "Not Right Now";
+    c3.description         = "Too busy for romance.";
+    c3.rankingPointsEffect = 15;
+    c3.fatigueEffect       = -5;
+    e.choices.add(c3);
+
+    return e;
+  }
+
+  HealthLifeEvent createInjuryEvent(String part, int weeks) {
+    HealthLifeEvent e = new HealthLifeEvent(
+      "Injury Scare",
+      "You felt pain in your " + part + " during practice. Do you rest or push through?"
+    );
+
+    EventChoice c1 = new EventChoice();
+    c1.label               = "See a Doctor";
+    c1.description         = "Get professional help.";
+    c1.rankingPointsEffect = -15;
+    c1.happinessEffect     = 5;
+    e.choices.add(c1);
+
+    EventChoice c2 = new EventChoice();
+    c2.label               = "Push Through";
+    c2.description         = "No time to rest.";
+    c2.fatigueEffect       = 20;
+    c2.rankingPointsEffect = 10;
+    c2.mentalEffect        = -5;
+    e.choices.add(c2);
+
+    EventChoice c3 = new EventChoice();
+    c3.label               = "Take a Break";
+    c3.description         = "Protect your body.";
+    c3.rankingPointsEffect = -25;
+    c3.fatigueEffect       = -15;
+    e.choices.add(c3);
+
+    return e;
+  }
+
+  LegalLifeEvent createScandalEvent() {
+    LegalLifeEvent e = new LegalLifeEvent(
+      "Paparazzi Scandal",
+      "Embarrassing photos of you surface online. Your agent is calling frantically."
+    );
+
+    EventChoice c1 = new EventChoice();
+    c1.label            = "Public Apology";
+    c1.description      = "Get ahead of the story.";
+    c1.reputationEffect = 5;
+    c1.happinessEffect  = -10;
+    e.choices.add(c1);
+
+    EventChoice c2 = new EventChoice();
+    c2.label            = "Ignore It";
+    c2.description      = "Let it blow over.";
+    c2.reputationEffect = -10;
+    c2.confidenceEffect = 8;
+    e.choices.add(c2);
+
+    EventChoice c3 = new EventChoice();
+    c3.label            = "Hire PR Team";
+    c3.description      = "$50K but worth it.";
+    c3.moneyEffect      = -50;
+    c3.reputationEffect = 15;
+    e.choices.add(c3);
+
+    return e;
+  }
+}
+
+// ------------------------------------------------------------
+// Strategy Pattern — RankingStrategy
+// OOP role: Strategy pattern
+// ------------------------------------------------------------
+
+/**
+ * RankingStrategy — Strategy pattern for age-appropriate ranking calculation.
+ * OOP role: Strategy pattern
+ */
+interface RankingStrategy { // OOP: Strategy pattern
+  int calculateRanking(int points, int age);
+}
+
+class JuniorRankingStrategy implements RankingStrategy { // OOP: Strategy pattern
+  int calculateRanking(int points, int age) {
+    // Points thresholds are age-scaled — a 10-year-old competes in a smaller pool
+    // than a 17-year-old, so fewer points are needed for a high junior rank
+    float ageScale = constrain(map(age, 10, 17, 0.3, 1.0), 0.1, 1.0);
+    int scaledPts  = (int)(points / max(ageScale, 0.1));
+    if (scaledPts >= 3000) return (int)random(1, 5);
+    if (scaledPts >= 1500) return (int)random(5, 25);
+    if (scaledPts >= 700)  return (int)random(25, 80);
+    if (scaledPts >= 300)  return (int)random(80, 200);
+    if (scaledPts >= 100)  return (int)random(200, 400);
+    return (int)random(400, 600); // unranked / just starting out
+  }
+}
+
+class ProRankingStrategy implements RankingStrategy { // OOP: Strategy pattern
+  int calculateRanking(int points, int age) {
+    if (points >= 10000) return (int)random(1, 3);
+    if (points >= 7000)  return (int)random(3, 8);
+    if (points >= 5000)  return (int)random(8, 20);
+    if (points >= 3000)  return (int)random(20, 50);
+    if (points >= 1500)  return (int)random(50, 100);
+    if (points >= 500)   return (int)random(100, 200);
+    return (int)random(200, 500);
+  }
+}
+
+class UniversityRankingStrategy implements RankingStrategy { // OOP: Strategy pattern
+  int calculateRanking(int points, int age) {
+    return 9999; // not pro ranked
+  }
+}
+
+
+// ============================================================
+// _missing_classes.pde
+// ============================================================
+
+// Missing classes extracted from original
+
+class OwnedProperty {
+  String       name;
+  PropertyType type;
+  float        purchasePrice;
+  float        currentValue;
+  float        weeklyUpkeep;
+  float        weeklyMortgage;
+  float        mortgageLeft;
+  int          yearPurchased;
+
+  OwnedProperty(String n, PropertyType t, float price, int year) {
+    name          = n;
+    type          = t;
+    purchasePrice = price;
+    currentValue  = price;
+    yearPurchased = year;
+    mortgageLeft  = price * 0.80;
+
+    float annualRate = 0.055 / 52.0;
+    switch (t) {
+      case APARTMENT:   weeklyUpkeep = 200;  weeklyMortgage = mortgageLeft * annualRate; break;
+      case CONDO:       weeklyUpkeep = 400;  weeklyMortgage = mortgageLeft * annualRate; break;
+      case HOUSE:       weeklyUpkeep = 800;  weeklyMortgage = mortgageLeft * annualRate; break;
+      case MANSION:     weeklyUpkeep = 3000; weeklyMortgage = mortgageLeft * annualRate; break;
+      case BEACH_HOUSE: weeklyUpkeep = 2000; weeklyMortgage = mortgageLeft * annualRate; break;
+      case PENTHOUSE:   weeklyUpkeep = 5000; weeklyMortgage = mortgageLeft * annualRate; break;
+      default:          weeklyUpkeep = 500;  weeklyMortgage = mortgageLeft * annualRate; break;
+    }
+  }
+
+  float weeklyTotal()   { return weeklyUpkeep + weeklyMortgage; }
+  float downPayment()   { return purchasePrice * 0.20; }
+
+  String typeName() {
+    switch (type) {
+      case APARTMENT:   return "Apartment";
+      case CONDO:       return "Condo";
+      case HOUSE:       return "House";
+      case MANSION:     return "Mansion";
+      case BEACH_HOUSE: return "Beach House";
+      case PENTHOUSE:   return "Penthouse";
+      default:          return "Property";
+    }
+  }
+}
+
+class OwnedVehicle {
+  String      name;
+  VehicleType type;
+  float       purchasePrice;
+  float       weeklyUpkeep;
+
+  OwnedVehicle(String n, VehicleType t, float price) {
+    name          = n;
+    type          = t;
+    purchasePrice = price;
+    switch (t) {
+      case ECONOMY_CAR: weeklyUpkeep = 50;   break;
+      case SPORTS_CAR:  weeklyUpkeep = 200;  break;
+      case LUXURY_CAR:  weeklyUpkeep = 500;  break;
+      case SUPERCAR:    weeklyUpkeep = 1500; break;
+      case PRIVATE_JET: weeklyUpkeep = 8000; break;
+      default:          weeklyUpkeep = 100;  break;
+    }
+  }
+
+  String typeName() {
+    switch (type) {
+      case ECONOMY_CAR: return "Economy Car";
+      case SPORTS_CAR:  return "Sports Car";
+      case LUXURY_CAR:  return "Luxury Car";
+      case SUPERCAR:    return "Supercar";
+      case PRIVATE_JET: return "Private Jet";
+      default:          return "Vehicle";
+    }
+  }
+}
+
+class OwnedInvestment {
+  String         name;
+  InvestmentType type;
+  float          invested;
+  float          currentValue;
+  float          weeklyReturnRate;
+  float          volatility;
+
+  OwnedInvestment(String n, InvestmentType t, float amt) {
+    name         = n;
+    type         = t;
+    invested     = amt;
+    currentValue = amt;
+    switch (t) {
+      case STOCKS:           weeklyReturnRate = 0.0020; volatility = 0.030; break;
+      case CRYPTO:           weeklyReturnRate = 0.0040; volatility = 0.100; break;
+      case BONDS:            weeklyReturnRate = 0.0010; volatility = 0.002; break;
+      case REAL_ESTATE_FUND: weeklyReturnRate = 0.0015; volatility = 0.010; break;
+      case BUSINESS_VENTURE: weeklyReturnRate = 0.0030; volatility = 0.050; break;
+      default:               weeklyReturnRate = 0.0015; volatility = 0.020; break;
+    }
+  }
+
+  void updateWeek() {
+    float r = weeklyReturnRate + randomGaussian() * volatility;
+    currentValue *= (1 + r);
+    if (currentValue < 0) currentValue = 0;
+  }
+
+  float unrealizedGain() { return currentValue - invested; }
+  float gainPct()        { return invested > 0 ? (unrealizedGain() / invested) * 100 : 0; }
+
+  String typeName() {
+    switch (type) {
+      case STOCKS:           return "Stock Market";
+      case CRYPTO:           return "Crypto";
+      case BONDS:            return "Bonds";
+      case REAL_ESTATE_FUND: return "Real Estate Fund";
+      case BUSINESS_VENTURE: return "Venture Capital";
+      default:               return "Investment";
+    }
+  }
+}
+
+class OwnedBusiness {
+  String name;
+  float  invested;
+  float  currentValue;
+  float  weeklyRevenue;
+  float  weeklyExpenses;
+  int    weeksOwned;
+  boolean isProfit;
+
+  OwnedBusiness(String n, float inv) {
+    name         = n;
+    invested     = inv;
+    currentValue = inv;
+    weeksOwned   = 0;
+    weeklyRevenue  = inv * 0.0022;
+    weeklyExpenses = inv * 0.0016;
+  }
+
+  float weeklyProfit() { return weeklyRevenue - weeklyExpenses; }
+
+  void updateWeek() {
+    weeksOwned++;
+    if (weeksOwned > 52 && random(1) < 0.06) weeklyRevenue  *= 1.04;
+    if (random(1) < 0.02)                    weeklyExpenses *= 1.08;
+    weeklyRevenue  = max(0, weeklyRevenue);
+    weeklyExpenses = max(0, weeklyExpenses);
+    currentValue   = invested + weeklyProfit() * weeksOwned * 0.9;
+    currentValue   = max(0, currentValue);
+    isProfit       = weeklyProfit() > 0;
+  }
+}
+
+class SocialMediaProfile {
+  float      followers      = 5000;
+  SocialTier tier           = SocialTier.UNKNOWN;
+  float      engagementRate = 0.05;
+  float      controversyScore = 0;
+  boolean    hasPRManager   = false;
+
+  void updateWeek(int ranking, boolean viralEvent) {
+    float growthRate = 0.003;
+    growthRate += map(constrain(500 - ranking, 0, 500), 0, 500, 0, 0.018);
+    if (viralEvent) growthRate += 0.05;
+    if (hasPRManager) growthRate += 0.005;
+    controversyScore = max(0, controversyScore - 2);
+    followers *= (1 + growthRate);
+    followers  = max(followers, 100);
+    updateTier();
+  }
+
+  void updateTier() {
+    if      (followers >= 10_000_000) tier = SocialTier.MEGASTAR;
+    else if (followers >=  1_000_000) tier = SocialTier.GLOBAL_ICON;
+    else if (followers >=    100_000) tier = SocialTier.NATIONAL_STAR;
+    else if (followers >=     10_000) tier = SocialTier.LOCAL_CELEB;
+    else                               tier = SocialTier.UNKNOWN;
+  }
+
+  float weeklyBrandValue() {
+    float base = followers * 0.0005;
+    base *= (1 + engagementRate * 4);
+    if (hasPRManager) base *= 1.3;
+    return base;
+  }
+
+  String tierLabel() {
+    switch (tier) {
+      case MEGASTAR:      return "Megastar";
+      case GLOBAL_ICON:   return "Global Icon";
+      case NATIONAL_STAR: return "National Star";
+      case LOCAL_CELEB:   return "Local Celeb";
+      default:            return "Unknown";
+    }
+  }
+
+  String followersLabel() {
+    if (followers >= 1_000_000) return nf(followers / 1_000_000, 0, 1) + "M";
+    if (followers >= 1_000)     return (int)(followers / 1000) + "K";
+    return "" + (int)followers;
+  }
+}
+
+class AgentContract {
+  AgentTier tier;
+  String    agentName;
+  float     commissionRate;
+  float     weeklySalary;
+  float     bonusEndorsementMultiplier;
+
+  AgentContract(AgentTier t) {
+    tier = t;
+    switch (t) {
+      case NO_AGENT:
+        agentName = "No Agent"; commissionRate = 0;    weeklySalary = 0;     bonusEndorsementMultiplier = 0;    break;
+      case BASIC_AGENT:
+        agentName = "Local Agent"; commissionRate = 0.05; weeklySalary = 500;   bonusEndorsementMultiplier = 0.10; break;
+      case MID_TIER:
+        agentName = "IMG Sports";  commissionRate = 0.08; weeklySalary = 1500;  bonusEndorsementMultiplier = 0.30; break;
+      case ELITE:
+        agentName = "WME Agency";  commissionRate = 0.10; weeklySalary = 3500;  bonusEndorsementMultiplier = 0.60; break;
+      case SUPERAGENT:
+        agentName = "Roc Nation";  commissionRate = 0.12; weeklySalary = 8000;  bonusEndorsementMultiplier = 1.10; break;
+      default:
+        agentName = "None"; commissionRate = 0; weeklySalary = 0; bonusEndorsementMultiplier = 0; break;
+    }
+  }
+
+  String tierLabel() {
+    switch (tier) {
+      case NO_AGENT:    return "No Agent";
+      case BASIC_AGENT: return "Local Agent";
+      case MID_TIER:    return "Mid-Tier Agency";
+      case ELITE:       return "Elite Agency";
+      case SUPERAGENT:  return "Superagent";
+      default:          return "Unknown";
+    }
+  }
+
+  color tierColor() {
+    switch (tier) {
+      case SUPERAGENT:  return color(220, 160, 40);
+      case ELITE:       return color(180, 80, 220);
+      case MID_TIER:    return color(60, 140, 220);
+      case BASIC_AGENT: return color(60, 180, 100);
+      default:          return color(120, 130, 150);
+    }
+  }
+}
+
+class Award {
+  AwardType type;
+  int       year;
+  String    sport;
+
+  Award(AwardType t, int y, String s) { type = t; year = y; sport = s; }
+
+  String label() {
+    switch (type) {
+      case PLAYER_OF_YEAR:   return "Player of the Year " + year;
+      case BEST_NEWCOMER:    return "Best Newcomer " + year;
+      case COMEBACK_PLAYER:  return "Comeback Player of the Year " + year;
+      case MVP:              return "MVP " + year;
+      case HUMANITARIAN:     return "Humanitarian Award " + year;
+      case SPORTSMANSHIP:    return "Sportsmanship Award " + year;
+      default:               return "Award " + year;
+    }
+  }
+}
+
+class TutorialSystem {
+  int step = 0;
+  boolean active = true;
+  String[] tips = {
+    "Welcome! Press SPACE or tap AGE UP to advance time each week.",
+    "Read the event card in the middle — pick one of 3 choices to shape your career.",
+    "Watch your FATIGUE bar on the left. Rest weeks recover energy.",
+    "Check the LIFE tab for relationships, mental health, and finances.",
+    "Use TRAINING to boost your stats. Higher intensity = more gains but more fatigue.",
+    "Your decisions affect Fame, Wealth, and Happiness — not just athletic stats!",
+    "LIFESTYLE tab lets you buy property, cars, and investments.",
+    "Keep an eye on your MENTAL HEALTH — burnout ends careers early.",
+    "Romance events can lead to dating, engagement, and marriage.",
+    "You're on your own now. Make it count."
+  };
+
+  boolean isActive() { return active && step < tips.length; }
+
+  String currentTip() { return step < tips.length ? tips[step] : ""; }
+
+  void advance() { step++; if (step >= tips.length) active = false; }
+
+  void draw(float screenW, float screenH) {
+    if (!isActive()) return;
+    // Semi-transparent overlay banner at bottom
+    float bh = 64;
+    float by = screenH - bh - 10;
+    fill(0, 0, 0, 180);
+    noStroke();
+    rect(20, by, screenW - 40, bh, 8);
+    fill(255, 200, 55);
+    rect(20, by, 4, bh, 8, 0, 0, 8);
+    fill(255, 200, 55);
+    textSize(10);
+    textAlign(LEFT, CENTER);
+    text("TIP " + (step+1) + "/" + tips.length, 34, by + 12);
+    fill(228, 234, 248);
+    textSize(13);
+    text(currentTip(), 34, by + 40);
+    fill(130, 140, 160);
+    textSize(10);
+    textAlign(RIGHT, CENTER);
+    text("click to dismiss", screenW - 30, by + 52);
+  }
+
+  boolean handleClick(int mx, int my, float screenW, float screenH) {
+    if (!isActive()) return false;
+    float bh = 64;
+    float by = screenH - bh - 10;
+    if (mx >= 20 && mx <= screenW-20 && my >= by && my <= by+bh) {
+      advance();
+      return true;
+    }
+    return false;
+  }
+}
+
+
+// ============================================================
+// BaseScreen.pde
+// ============================================================
+
+/**
+ * BaseScreen — Abstract base class for all game screens.
+ * OOP role: Inheritance (all screens extend this), Abstraction (abstract methods)
+ * Collaborators: UITheme, GameEngine, all Screen subclasses
+ */
+
+abstract class BaseScreen { // OOP: Inheritance
+
+  // ── Fields ──────────────────────────────────────────────────
+  GameEngine engine;
+  UITheme    theme;
+  int        hoverX, hoverY;
+
+  // Layout constants — subclasses can use these
+  final int CARD_PAD    = 16;
+  final int CARD_GAP    =  8;
+  final int SECTION_GAP = 24;
+  final int COL_GAP     = 12;
+
+  // ── Constructor ─────────────────────────────────────────────
+  BaseScreen(GameEngine e) {
+    engine = e;
+    theme  = new UITheme();
+  }
+
+  // ── Abstract methods (OOP: Abstraction) ─────────────────────
+  abstract void render();                  // OOP: Abstraction
+  abstract String getScreenTitle();        // OOP: Abstraction — every screen must name itself
+
+  // ── Concrete shared methods (OOP: Inheritance) ──────────────
+
+  /**
+   * renderScreenHeader — shared implementation (OOP: Inheritance)
+   * Draws a consistent top-of-screen header with the screen title
+   * and a thin separator line beneath it.
+   */
+  void renderScreenHeader() { // OOP: Inheritance — shared implementation
+    // Title label
+    fill(theme.TEXT_DIM);
+    textSize(10);
+    textAlign(LEFT, CENTER);
+    text(getScreenTitle().toUpperCase(), 20, 72);
+
+    // Thin separator line
+    stroke(theme.BORDER);
+    strokeWeight(1);
+    line(0, 80, width, 80);
+    noStroke();
+  }
+
+  // ── Lifecycle hooks with empty defaults ─────────────────────
+  void onEnter()                       {}
+  void onKey(char k, int kc)           {}
+  void onClick(int mx, int my)         {}
+  void onRelease(int mx, int my)       {}
+  void onHover(int mx, int my)         { hoverX = mx; hoverY = my; }
+
+  // ── Section header ──────────────────────────────────────────
+  /**
+   * Draws a compact section label with a gold accent dot.
+   * NO trailing line — the old line looked cheap.
+   */
+  void sectionHeader(String label, float x, float y) {
+    // Gold 4 px dot
+    fill(theme.GOLD);
+    noStroke();
+    ellipse(x + 4, y, 4, 4);
+
+    // Label text
+    fill(theme.TEXT_DIM);
+    textSize(9);
+    textAlign(LEFT, CENTER);
+    text(label.toUpperCase(), x + 14, y);
+  }
+
+  // ── Premium event card ──────────────────────────────────────
+  /**
+   * drawEventPanel — renders a rich, colour-coded event card with
+   * up to three tappable choice buttons.
+   * Accepts GameEvent for backward compatibility.
+   */
+  void drawEventPanel(GameEvent evt, float x, float y, float w) {
+    if (evt == null) return;
+    int   numChoices = (evt.choices != null) ? evt.choices.size() : 0;
+    float h          = 160 + numChoices * 74;
+
+    // ── Determine accent colour from event type ──────────────
+    color accent    = color(245, 197, 24); // gold default
+    String typeLabel = "EVENT";
+    if (evt.eventType == EventType.FAMILY)    { accent = color(255, 107, 174); typeLabel = "ROMANCE";   }
+    if (evt.eventType == EventType.INJURY)    { accent = color(255,  77,  77); typeLabel = "HEALTH";    }
+    if (evt.eventType == EventType.MEDIA)     { accent = color( 74, 158, 255); typeLabel = "MEDIA";     }
+    if (evt.eventType == EventType.FINANCIAL) { accent = color( 46, 204, 138); typeLabel = "FINANCIAL"; }
+    if (evt.eventType == EventType.LEGAL)     { accent = color(255, 122,  48); typeLabel = "LEGAL";     }
+    if (evt.eventType == EventType.SOCIAL)    { accent = color(155, 127, 255); typeLabel = "SOCIAL";    }
+    if (evt.eventType == EventType.RIVAL)     { accent = color(255, 122,  48); typeLabel = "RIVAL";     }
+
+    // ── Card background ──────────────────────────────────────
+    fill(19, 21, 28);
+    stroke(255, 255, 255, 20);
+    strokeWeight(1);
+    rect(x, y, w, h, 12);
+    noStroke();
+
+    // ── Top accent bar ───────────────────────────────────────
+    fill(accent);
+    noStroke();
+    rect(x, y, w, 4, 12, 12, 0, 0);
+
+    // ── Top glow wash ────────────────────────────────────────
+    fill(accent, 15);
+    rect(x, y, w, 36, 12, 12, 0, 0);
+
+    // ── Event-type pill ──────────────────────────────────────
+    textSize(9);
+    float pillW = textWidth(typeLabel) + 20;
+    fill(accent, 25);
+    noStroke();
+    rect(x + 14, y + 12, pillW, 20, 10);
+    fill(accent);
+    textSize(9);
+    textAlign(LEFT, CENTER);
+    text(typeLabel, x + 24, y + 22);
+
+    // ── Headline ─────────────────────────────────────────────
+    fill(238, 240, 245);
+    textSize(19);
+    textAlign(LEFT, TOP);
+    drawWrappedText(evt.headline == null ? "" : evt.headline, x + 14, y + 40, w - 28, 24);
+
+    // ── Description ──────────────────────────────────────────
+    fill(139, 147, 168);
+    textSize(12);
+    drawWrappedText(evt.description == null ? "" : evt.description, x + 14, y + 70, w - 28, 17);
+
+    // ── Divider ───────────────────────────────────────────────
+    stroke(255, 255, 255, 15);
+    strokeWeight(1);
+    line(x + 14, y + 130, x + w - 14, y + 130);
+    noStroke();
+
+    // ── Choice buttons ────────────────────────────────────────
+    if (evt.choices != null) {
+      float   cy         = y + 138;
+      color[] btnAccents = { color(245, 197, 24), color(74, 158, 255), color(46, 204, 138) };
+
+      for (int i = 0; i < min(evt.choices.size(), 3); i++) {
+        EventChoice ch    = evt.choices.get(i);
+        boolean     hover = theme.isHover(hoverX, hoverY, x + 10, cy, w - 20, 66);
+        color       ba    = btnAccents[i % btnAccents.length];
+
+        // Button body
+        fill(hover ? ba : color(28, 31, 42));
+        stroke(hover ? ba : color(255, 255, 255, 20));
+        strokeWeight(hover ? 2 : 1);
+        rect(x + 10, cy, w - 20, 66, 8);
+        noStroke();
+
+        // Colored left-border accent bar
+        fill(hover ? color(10, 12, 18, 80) : ba);
+        noStroke();
+        rect(x + 10, cy, 5, 66, 8, 0, 0, 8);
+
+        // Shine overlay when hovered
+        if (hover) {
+          fill(255, 255, 255, 20);
+          rect(x + 17, cy + 2, w - 27, 18, 6);
+        }
+
+        // Number circle
+        fill(hover ? color(10, 12, 18) : ba, hover ? 255 : 200);
+        noStroke();
+        ellipse(x + 32, cy + 33, 26, 26);
+        fill(hover ? color(255, 255, 255) : color(10, 12, 18));
+        textSize(12);
+        textAlign(CENTER, CENTER);
+        text((i + 1) + "", x + 32, cy + 33);
+
+        // Choice label
+        fill(hover ? color(10, 12, 18) : color(238, 240, 245));
+        textSize(13);
+        textAlign(LEFT, TOP);
+        text(ch.label == null ? "" : ch.label, x + 52, cy + 13);
+
+        // Choice description (truncated if too long)
+        fill(hover ? color(30, 40, 60) : color(139, 147, 168));
+        textSize(10);
+        textAlign(LEFT, TOP);
+        String d = (ch.description == null) ? "" : ch.description;
+        if (d.length() > 65) d = d.substring(0, 62) + "...";
+        text(d, x + 52, cy + 35);
+
+        // Keyboard-shortcut hint
+        fill(hover ? color(20, 30, 40) : color(55, 65, 85));
+        textSize(8);
+        textAlign(RIGHT, CENTER);
+        text("[" + (i + 1) + "]", x + w - 14, cy + 33);
+
+        cy += 74;
+      }
+    }
+  }
+
+  // ── Effect pills ────────────────────────────────────────────
+  /**
+   * drawEffectPills — renders up to 4 compact coloured pills showing
+   * the stat-change preview for an EventChoice (rankingPoints, money,
+   * confidence, happiness).
+   */
+  void drawEffectPills(EventChoice ch, float x, float y) {
+    float px = x;
+    if (ch.rankingPointsEffect != 0)
+      px = drawPill((ch.rankingPointsEffect > 0 ? "+" : "") + ch.rankingPointsEffect + " PTS",
+                    px, y, ch.rankingPointsEffect > 0);
+    if (ch.moneyEffect != 0)
+      px = drawPill(formatMoney(ch.moneyEffect * 1000),
+                    px, y, ch.moneyEffect > 0);
+    if (ch.confidenceEffect != 0)
+      px = drawPill((ch.confidenceEffect > 0 ? "+" : "") + ch.confidenceEffect + " CON",
+                    px, y, ch.confidenceEffect > 0);
+    if (ch.happinessEffect != 0)
+      drawPill((ch.happinessEffect > 0 ? "+" : "") + ch.happinessEffect + " HAP",
+               px, y, ch.happinessEffect > 0);
+  }
+
+  // ── Pill helper ─────────────────────────────────────────────
+  /**
+   * drawPill — draws a single rounded stat pill and returns the
+   * x-coordinate immediately after it (x + width + 4).
+   *
+   * @param label    text to display inside the pill
+   * @param x        left edge
+   * @param y        vertical centre
+   * @param positive true → green palette, false → red palette
+   * @return x + pill-width + 4 (next pill starting x)
+   */
+  float drawPill(String label, float x, float y, boolean positive) {
+    textSize(9);
+    float w = textWidth(label) + 10;
+    // Background fill
+    fill(positive ? color(30, 70, 45) : color(70, 25, 25));
+    noStroke();
+    rect(x, y, w, 17, 9);
+    // Label
+    fill(positive ? theme.SUCCESS : theme.DANGER);
+    textAlign(CENTER, CENTER);
+    text(label, x + w / 2, y + 8);
+    return x + w + 4;
+  }
+
+  // ── Word-wrap text helper ────────────────────────────────────
+  /**
+   * drawWrappedText — renders txt inside a maxW-wide column,
+   * breaking at word boundaries and advancing by lineH per row.
+   */
+  void drawWrappedText(String txt, float x, float y, float maxW, float lineH) {
+    if (txt == null || txt.isEmpty()) return;
+    String[] words = txt.split(" ");
+    String   line  = "";
+    float    cy    = y;
+    textAlign(LEFT, TOP);
+    for (String word : words) {
+      String test = line.isEmpty() ? word : line + " " + word;
+      if (textWidth(test) > maxW) {
+        if (!line.isEmpty()) { text(line, x, cy); cy += lineH; }
+        line = word;
+      } else {
+        line = test;
+      }
+    }
+    if (!line.isEmpty()) text(line, x, cy);
+  }
+
+  // ── Money formatter ──────────────────────────────────────────
+  /**
+   * formatMoney — returns a compact currency string.
+   *   >= 1 000 000  →  "$Xm"
+   *   >=     1 000  →  "$XK"
+   *   else          →  "$X"
+   * Negative values are prefixed with "-$".
+   */
+  String formatMoney(float m) {
+    if (m < 0) return "-$" + formatMoneyAbs(-m);
+    return "$" + formatMoneyAbs(m);
+  }
+
+  // ── Private magnitude helper ─────────────────────────────────
+  String formatMoneyAbs(float m) {
+    if (m >= 1000000) return nf(m / 1000000.0, 0, 1) + "m";
+    if (m >= 1000)    return (int)(m / 1000) + "K";
+    return "" + (int)m;
+  }
+
+  // ── Career-phase colour lookup ───────────────────────────────
+  /**
+   * phaseColor — maps a CareerPhase enum value to its brand colour.
+   */
+  color phaseColor(CareerPhase p) {
+    switch (p) {
+      case JUNIOR:    return color(100, 160, 255);
+      case RISING:    return color( 80, 220, 120);
+      case PRIME:     return color(220, 160,  40);
+      case VETERAN:   return color(200, 100,  60);
+      case DECLINING: return color(160,  80,  80);
+      default:        return theme.TEXT_DIM;
+    }
+  }
+
+  // ── Career-history logger ────────────────────────────────────
+  /**
+   * logCareerEvent — appends a narrative string to the player's
+   * career history. Safe to call when engine/state/player are null.
+   */
+  void logCareerEvent(String msg) {
+    if (engine != null && engine.state != null && engine.state.player != null)
+      engine.state.player.career.addHistory(msg);
+  }
+}
+
+
+// ============================================================
+// AIEngine.pde
+// ============================================================
+
+/**
+ * AIScenarioEngine — Claude AI integration for dynamic life/career events.
+ * OOP role: Single Responsibility, Encapsulation
+ * Collaborators: GameEngine, GameState, Player, GameEventFactory (OOP: Factory)
+ */
+
 import java.net.http.*;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -14,6 +1630,14 @@ class AIScenarioEngine {
   boolean   hasNewEvent   = false;
   GameEvent pendingEvent  = null;
   String    loadingMessage = "Simulating...";
+  int       playerAge     = 0;
+
+  // Match moment AI state (separate from weekly event pipeline)
+  boolean   hasNewMatchMoment  = false;
+  GameEvent pendingMatchMoment = null;
+
+  // Anti-repetition for fallback events
+  int _lastFallbackIdx = -1;
 
   // Loading animation
   int      loadingFrame = 0;
@@ -30,8 +1654,9 @@ class AIScenarioEngine {
     isLoading   = true;
     hasNewEvent = false;
     loadingFrame = 0;
+    playerAge   = player.age(currentYear);
 
-    final String playerContext = player.toPromptString(currentYear, week);
+    final String playerContext = player.toPromptString(currentYear, week, sport);
     final Sport  sportFinal    = sport;
     final AIScenarioEngine self = this;
 
@@ -41,10 +1666,12 @@ class AIScenarioEngine {
           GameEvent evt = self.callClaude(self.buildWeeklyPrompt(playerContext, sportFinal));
           self.pendingEvent = evt;
           self.hasNewEvent  = true;
+          // OOP: Observer pattern — could notify GameEventListeners here
         } catch (Exception e) {
           println("Claude API error: " + e.getMessage());
           self.pendingEvent = self.fallbackEvent();
           self.hasNewEvent  = true;
+          // OOP: Observer pattern — could notify GameEventListeners here
         } finally {
           self.isLoading = false;
         }
@@ -55,7 +1682,7 @@ class AIScenarioEngine {
 
   void generateLegacyNarrative(Player player, int currentYear, Sport sport, final LegacyCallback cb) {
     isLoading = true;
-    final String playerContext  = player.toPromptString(currentYear, 0);
+    final String playerContext  = player.toPromptString(currentYear, 0, sport);
     final Player p              = player;
     final Sport  sportFinal     = sport;
     final AIScenarioEngine self = this;
@@ -76,61 +1703,190 @@ class AIScenarioEngine {
     t.start();
   }
 
-  // Prompt builders
-  String buildWeeklyPrompt(String playerContext, Sport sport) {
+  // ── Match moment generation (set/quarter/half live narrative) ────────────
+  void generateMatchMoment(Player player, Tournament tournament, RoundName round,
+                            int segment, int playerSets, int oppSets,
+                            OpponentProfile opp, Sport sport) {
+    if (isLoading) return;  // don't interrupt life event generation
+    hasNewMatchMoment = false;
+    pendingMatchMoment = null;
+
+    final String prompt = buildMatchMomentPrompt(player, tournament, round, segment,
+                                                  playerSets, oppSets, opp, sport);
+    final AIScenarioEngine self = this;
+
+    Thread t = new Thread(new Runnable() {
+      public void run() {
+        try {
+          GameEvent evt = self.callClaude(prompt);
+          self.pendingMatchMoment = evt;
+          self.hasNewMatchMoment  = true;
+        } catch (Exception e) {
+          println("Claude match moment error: " + e.getMessage());
+          // Don't set pendingMatchMoment on failure — the hardcoded fallback stays
+          self.hasNewMatchMoment = false;
+        }
+      }
+    });
+    t.start();
+  }
+
+  String buildMatchMomentPrompt(Player player, Tournament tournament, RoundName round,
+                                 int segment, int playerSets, int oppSets,
+                                 OpponentProfile opp, Sport sport) {
     SportConfig cfg = getSportConfig(sport);
-    // Extract relationship snippet for extra prompt context
-    String relSnippet = "";
-    int ri = playerContext.indexOf("RelStatus: ");
-    if (ri >= 0) {
-      int end = playerContext.indexOf(" | ", ri);
-      relSnippet = "\nRelationship: " + (end >= 0 ? playerContext.substring(ri + 11, end) : playerContext.substring(ri + 11));
-    }
-    return "You are the dynamic event generator for a professional " + cfg.name + " career simulation game.\n\n" +
-      "Sport: " + cfg.name + "\n" +
-      "Current player state:\n" + playerContext + "\n" + relSnippet + "\n\n" +
-      "Generate a realistic life event or dilemma for this " + cfg.name + " player based on their current age and stage. " +
-      "If they are a teenager or university student, focus on youth/student life events. " +
-      "If they are professional (age 18+), focus on professional career events. " +
-      "Consider the player's age, hometown, family, ranking, and personality.\n\n" +
-      "Respond ONLY with valid JSON in exactly this format (no markdown, no extra text):\n" +
-      "{\n" +
-      "  \"type\": \"CAREER_CHOICE\",\n" +
-      "  \"headline\": \"Short dramatic headline (max 8 words)\",\n" +
-      "  \"description\": \"2-3 sentence narrative description of the situation\",\n" +
-      "  \"choices\": [\n" +
-      "    {\n" +
-      "      \"label\": \"Choice label (max 5 words)\",\n" +
-      "      \"description\": \"One sentence outcome description\",\n" +
-      "      \"effects\": {\n" +
-      "        \"confidence\": 0,\n" +
-      "        \"fatigue\": 0,\n" +
-      "        \"mental\": 0,\n" +
-      "        \"reputation\": 0,\n" +
-      "        \"rankingPoints\": 0,\n" +
-      "        \"money\": 0,\n" +
-      "        \"family\": 0\n" +
-      "      }\n" +
-      "    }\n" +
-      "  ]\n" +
-      "}\n\n" +
+    String segName  = segmentLabel(sport, segment);
+    String rdName   = roundLabel(round);
+    String situation = playerSets > oppSets ? "LEADING "  + playerSets + "-" + oppSets :
+                       playerSets < oppSets ? "TRAILING " + playerSets + "-" + oppSets :
+                       "TIED " + playerSets + "-" + oppSets;
+
+    return "You are a live sports commentator for a " + cfg.name + " simulation game.\n\n" +
+      "MATCH CONTEXT:\n" +
+      "Tournament: " + tournament.name + " (" + rdName + ")\n" +
+      "Player: " + player.name + " (#" + player.career.worldRanking + " in the world)\n" +
+      "Opponent: " + opp.name + " (#" + opp.ranking + " in the world)\n" +
+      "Segment: " + segName + "\n" +
+      "Score: " + situation + "\n" +
+      "Player state: Confidence " + (int)player.form.confidence + "%, Fatigue " + (int)player.form.fatigue + "%\n\n" +
+      "Write a TENSE, DRAMATIC 2-sentence match commentary describing what's happening RIGHT NOW at this moment in the match. " +
+      "Reference the score situation, the tournament stakes, and the opponent. Make it feel alive.\n\n" +
+      "Then generate 3 tactical decisions the player can make for this " + segName + ".\n\n" +
+      "Respond ONLY with valid JSON (no markdown):\n" +
+      "{\"type\":\"CAREER_CHOICE\"," +
+      "\"headline\":\"" + segName + " — " + tournament.name + "\"," +
+      "\"description\":\"[Your 2-sentence live commentary here]\"," +
+      "\"choices\":[{" +
+      "\"label\":\"Tactical choice label (3-5 words)\"," +
+      "\"description\":\"One sentence — what this approach means right now\"," +
+      "\"tag\":\"live_seg_aggressive\"," +
+      "\"effects\":{\"confidence\":0,\"fatigue\":0,\"mental\":0,\"reputation\":0," +
+      "\"rankingPoints\":0,\"money\":0,\"family\":0,\"happiness\":0," +
+      "\"smarts\":0,\"looks\":0,\"wellbeing\":0,\"popularity\":0," +
+      "\"addictionRisk\":0,\"legalRisk\":0}}]}\n\n" +
       "Rules:\n" +
-      "- Generate exactly 3 choices\n" +
-      "- confidence/fatigue/mental/reputation between -20 and +20; rankingPoints between -50 and +50\n" +
-      "- money is in $1,000s (e.g. 50 = $50K gained, -30 = $30K cost); range -200 to +500\n" +
-      "- family is family happiness delta (-20 to +20)\n" +
-      "- CRITICAL: Generate events from ALL life domains like BitLife — not just sport:\n" +
-      "  ROMANCE: meeting someone, relationship milestones, breakups, jealousy\n" +
-      "  MONEY: investments gone wrong, surprise windfalls, expensive temptations\n" +
-      "  LEGAL: doping rumours, contract disputes, tax issues, bar fights, criminal trouble\n" +
-      "  HEALTH: mental breakdown, mystery illness, injury decisions, addiction\n" +
-      "  SOCIAL: viral scandal, cancelled culture moment, unexpected friendship, media crisis\n" +
-      "  FAMILY: parent illness, sibling rivalry, partner ultimatum, child request\n" +
-      "  VICES: gambling, nightlife, substance temptation, reckless spending\n" +
-      "  RIVALS: trash talk incidents, rivalry escalation, public callouts, grudge matches\n" +
-      "- NEVER repeat sport-training as the event type — those are handled separately.\n" +
-      "- Write events with drama and consequence. Make the player feel it.\n" +
-      "- Tailor deeply to player state: broke players get money crises; famous players get scandals.";
+      "- Exactly 3 choices\n" +
+      "- Tag the 3 choices with: 'live_seg_aggressive', 'live_seg_composed', 'live_seg_adapt' respectively\n" +
+      "- Choices must be SPORT-SPECIFIC and SITUATIONAL (different if losing vs winning)\n" +
+      "- Effects: confidence/fatigue/mental between -15 and +15 only. Set rankingPoints/money to 0.\n" +
+      "- The description (commentary) MUST mention the score situation and the opponent by name\n" +
+      "- Make the commentary feel like ESPN / Sky Sports — tense and specific\n";
+  }
+
+  String segmentLabel(Sport sport, int seg) {
+    switch (sport) {
+      case TENNIS:     return "Set " + (seg + 1);
+      case BASKETBALL: return "Quarter " + (seg + 1);
+      case SOCCER:     return seg == 0 ? "First Half" : "Second Half";
+      case GOLF:       return seg == 0 ? "Front Nine" : "Back Nine";
+      case BOXING:     return "Rounds " + (seg * 4 + 1) + " to " + (seg * 4 + 4);
+      default:         return "Period " + (seg + 1);
+    }
+  }
+
+  String roundLabel(RoundName r) {
+    if (r == null) return "Match";
+    switch (r) {
+      case F:    return "Final";
+      case SF:   return "Semi-Final";
+      case QF:   return "Quarter-Final";
+      case R16:  return "Round of 16";
+      case R32:  return "Round of 32";
+      default:   return r.toString();
+    }
+  }
+
+  // Prompt builders
+
+  // IMPROVEMENT 2 — Better prompt builder
+  // Includes relationship status, age, current org/league, requests BitLife-style life events
+  // mixing career with personal life. OOP: encapsulates all prompt logic inside the engine.
+  String buildWeeklyPrompt(String playerCtx, Sport sport) {
+    SportConfig cfg = getSportConfig(sport);
+    int age = playerAge; // already stored in AIScenarioEngine
+
+    String ageSection;
+    if (age < 8) {
+      ageSection =
+        "AGE 5-7 (CHILDHOOD): Simple, joyful, low-stakes childhood moments.\n" +
+        "ALLOWED THEMES (pick ONE, rotate widely):\n" +
+        "  • Family: helping mom cook dinner, dad teaching you something, siblings playing\n" +
+        "  • School: getting a gold star, a funny teacher, show-and-tell, lunch friends\n" +
+        "  • Discovery: finding a new hobby, seeing your sport on TV for the first time\n" +
+        "  • Play: birthday party invite, playground dispute (minor), losing a toy\n" +
+        "  • Pets: wanting a dog, neighbor's cat, feeding ducks at the park\n" +
+        "FORBIDDEN: bullying, violence, romance, money problems, legal issues, social media.\n" +
+        "Tone: warm, small stakes, wonder and curiosity. Max effect values: ±8 on any stat.";
+    } else if (age < 13) {
+      ageSection =
+        "AGE 8-12 (ELEMENTARY/MIDDLE SCHOOL): School life, friendships, early sport, family.\n" +
+        "ALLOWED THEMES — pick ONE, vary widely, DO NOT repeat bullying more than once:\n" +
+        "  • SCHOOL: big test coming up, science fair project, forgot homework, teacher's favourite\n" +
+        "  • FRIENDSHIP: best friend moving away, making a new friend, group project conflict\n" +
+        "  • SPORT: youth practice conflict, first competition nerves, coach praises you\n" +
+        "  • FAMILY: parents arguing, sibling rivalry, grandparent visit, family vacation choice\n" +
+        "  • HOBBY: music lessons vs sport, art project, gaming obsession, reading challenge\n" +
+        "  • HEALTH: sick before a big match, growth spurt, dentist fear, eating habits\n" +
+        "  • SOCIAL: birthday party politics, being left out (NOT bullied — just excluded)\n" +
+        "FORBIDDEN: romance, substance use, violence, legal issues.\n" +
+        "Tone: relatable childhood/tween drama. Stakes are real to a kid but not life-altering. Max ±12.";
+    } else if (age < 18) {
+      ageSection =
+        "AGE 13-17 (TEENAGER): Identity, relationships, academic pressure, sport ambition.\n" +
+        "ALLOWED THEMES — vary widely across ALL categories below:\n" +
+        "  • ROMANCE: first crush confession, asking someone to prom, jealous ex, long-distance\n" +
+        "  • ACADEMICS: exam stress, skipping study for sport, teacher conflict, GPA vs training\n" +
+        "  • SPORT IDENTITY: coach gives you a shot at varsity, rival teammate, overtraining\n" +
+        "  • PEER PRESSURE: party invitation, friends trying to get you to skip practice\n" +
+        "  • FAMILY: curfew battle, parents divorce news, sibling leaving for college\n" +
+        "  • SELF IMAGE: body changes, social media comparison, style/confidence moment\n" +
+        "  • PART-TIME JOB: asked to work weekends, saving for gear, boss conflict\n" +
+        "  • FRIENDSHIP: loyalty test, outgrowing old friends, new crowd at school\n" +
+        "  • MENTAL HEALTH: burnout from sport, anxiety before tryouts, feeling lost\n" +
+        "FORBIDDEN: serious legal trouble, adult vices (alcohol/drugs before 16). Max ±18.";
+    } else if (age < 23) {
+      ageSection =
+        "AGE 18-22 (UNIVERSITY/EARLY PRO): Independence, love, money pressure, identity.\n" +
+        "ALLOWED THEMES:\n" +
+        "  • ROMANCE: serious relationship, long-distance, breakup, roommate crush\n" +
+        "  • ACADEMICS: dropping a class, professor conflict, dissertation stress\n" +
+        "  • FINANCE: first big purchase, student debt reality, scholarship pressure\n" +
+        "  • SOCIAL: party culture temptation, new city loneliness, social media fame\n" +
+        "  • CAREER FORK: agent offers, draft combines, transfer portal decision\n" +
+        "  • MENTAL HEALTH: homesickness, burnout, therapy first time\n" +
+        "Max ±20.";
+    } else {
+      ageSection =
+        "AGE 23+ (PROFESSIONAL): Mix sport career with rich personal life. 40% sport, 60% personal.\n" +
+        "ALLOWED THEMES — vary every event, DO NOT repeat sport-training as the event:\n" +
+        "  • ROMANCE: meeting someone, relationship milestone, jealousy, breakup\n" +
+        "  • FAMILY: parent illness, sibling rivalry, partner ultimatum, child milestone\n" +
+        "  • MONEY: bad investment, surprise windfall, expensive temptation, charity ask\n" +
+        "  • LEGAL: contract dispute, doping rumour, tax issue, bar fight\n" +
+        "  • HEALTH: mystery illness, addiction temptation, mental breakdown risk\n" +
+        "  • SOCIAL: viral scandal, cancelled moment, unexpected friendship, media crisis\n" +
+        "  • VICES: gambling invite, nightlife temptation, reckless spending\n" +
+        "  • RIVALS: trash talk, grudge match callout, public feud\n" +
+        "Max ±20, money -200 to +500K.";
+    }
+
+    return "You are the life event engine for a " + cfg.name + " career simulation game (like BitLife).\n\n" +
+      "PLAYER STATE:\n" + playerCtx + "\n\n" +
+      "=== AGE-APPROPRIATE EVENT GUIDE ===\n" + ageSection + "\n\n" +
+      "CRITICAL RULES:\n" +
+      "1. Generate exactly ONE event matching the age guide above.\n" +
+      "2. DO NOT generate bullying as the primary theme — it is overused. Pick something else.\n" +
+      "3. The event must feel fresh and different from generic sport-training events.\n" +
+      "4. Be SPECIFIC: use real names, places, situations. No vague 'a situation arose'.\n" +
+      "5. Make choices feel genuinely different with real trade-offs.\n\n" +
+      "Respond ONLY with valid JSON (no markdown, no extra text):\n" +
+      "{\"type\":\"CAREER_CHOICE\",\"headline\":\"Short dramatic headline (max 8 words)\"," +
+      "\"description\":\"2-3 vivid sentences describing the situation\"," +
+      "\"choices\":[{\"label\":\"Choice label (max 5 words)\",\"description\":\"One sentence outcome\"," +
+      "\"effects\":{\"confidence\":0,\"fatigue\":0,\"mental\":0,\"reputation\":0,\"rankingPoints\":0," +
+      "\"money\":0,\"family\":0,\"happiness\":0,\"smarts\":0,\"looks\":0,\"wellbeing\":0," +
+      "\"popularity\":0,\"addictionRisk\":0,\"legalRisk\":0}}]}\n" +
+      "Exactly 3 choices. Set most effects to 0 — only set non-zero when clearly relevant.";
   }
 
   String buildLegacyPrompt(String playerContext, Player player, Sport sport) {
@@ -146,7 +1902,7 @@ class AIScenarioEngine {
       "Hometown: " + player.hometown + "\n" +
       "Career summary:\n" + playerContext +
       "\nTotal titles: "   + player.career.titlesWon +
-      "\nMajor titles: "   + player.career.grandSlamTitles +
+      "\n" + cfg.majorLabel + ": "   + player.career.grandSlamTitles +
       "\nPrize money: $"   + (int)player.career.prizeMoney +
       parentStr + familyStr + "\n\n" +
       "Write a 4-5 sentence legacy story weaving together their sporting achievements, hometown roots, and personal journey. " +
@@ -321,19 +2077,47 @@ class AIScenarioEngine {
     return "\"" + s + "\"";
   }
 
-  // Varied fallback event pool (when API unavailable)
+  // IMPROVEMENT 1 — Expanded fallback event pool (age-aware)
+  // OOP: Factory pattern — GameEventFactory delegates to typed builder methods.
+  // When Claude API is unavailable, pick from an age-appropriate pool of varied life events.
   GameEvent fallbackEvent() {
-    int pick = (int)random(7);
-    switch (pick) {
-      case 0: return buildFallback_Sponsorship();
-      case 1: return buildFallback_RivalTaunt();
-      case 2: return buildFallback_Nightlife();
-      case 3: return buildFallback_Investment();
-      case 4: return buildFallback_FamilyCall();
-      case 5: return buildFallback_MediaStorm();
-      default: return buildFallback_Burnout();
+    int age = playerAge;
+    if (age < 13) {
+      GameEvent[] pool = new GameEvent[]{ buildFallback_SchoolMoment(), buildFallback_FamilyMoment() };
+      return pool[(int)random(pool.length)];
+    } else if (age < 18) {
+      GameEvent[] pool = new GameEvent[]{ buildFallback_TeenMoment(), buildFallback_FamilyMoment(), buildFallback_Burnout() };
+      return pool[(int)random(pool.length)];
+    }
+    // Adult pool — anti-repetition: never pick the same index twice in a row
+    int pick;
+    do { pick = (int)random(19); } while (pick == _lastFallbackIdx);
+    _lastFallbackIdx = pick;
+    switch(pick) {
+      case  0: return buildFallback_Sponsorship();
+      case  1: return buildFallback_RivalTaunt();
+      case  2: return buildFallback_FamilyCall();
+      case  3: return buildFallback_Burnout();
+      case  4: return buildFallback_MediaStorm();
+      case  5: return buildFallback_Investment();
+      case  6: return buildFallback_Nightlife();
+      case  7: return buildFallback_StomachBug();
+      case  8: return buildFallback_ParentInHospital();
+      case  9: return buildFallback_GamblingNight();
+      case 10: return buildFallback_Superfan();
+      case 11: return buildFallback_RivalsCoach();
+      case 12: return buildFallback_CancelCulture();
+      case 13: return buildFallback_DrugTest();
+      case 14: return buildFallback_ControversialEndorsement();
+      case 15: return buildFallback_CollegeScout();
+      case 16: return buildFallback_NewCoachOffer();
+      case 17: return buildFallback_TeamConflict();
+      case 18: return buildFallback_HousingUpgrade();
+      default: return buildFallback_Sponsorship();
     }
   }
+
+  // ── Original 7 fallback builders (GameEventFactory typed) ──────────────────
 
   GameEvent buildFallback_Sponsorship() {
     GameEvent e = new GameEvent();
@@ -412,6 +2196,191 @@ class AIScenarioEngine {
     return e;
   }
 
+  // ── 8 New inline fallback events ───────────────────────────────────────────
+
+  // Fallback 8: Stomach Bug — illness forcing rest
+  GameEvent buildFallback_StomachBug() {
+    GameEvent e = new GameEvent();
+    e.type = "CAREER_CHOICE"; e.headline = "Under the Weather";
+    e.description = "A stomach bug has wiped you out this week. You can barely get out of bed.";
+    e.choices = new ArrayList<EventChoice>();
+    EventChoice c1 = new EventChoice(); c1.label = "Push Through"; c1.fatigueEffect = 40; c1.rankingPointsEffect = -20; c1.description = "Gut it out — but your body pays the price."; e.choices.add(c1);
+    EventChoice c2 = new EventChoice(); c2.label = "Rest Properly"; c2.fatigueEffect = -15; c2.rankingPointsEffect = -30; c2.happinessEffect = 10; c2.description = "Smart recovery. Miss some training, feel human again."; e.choices.add(c2);
+    EventChoice c3 = new EventChoice(); c3.label = "See a Doctor"; c3.moneyEffect = -3; c3.fatigueEffect = -5; c3.rankingPointsEffect = -15; c3.description = "Get properly diagnosed and back on your feet faster."; e.choices.add(c3);
+    return e;
+  }
+
+  // Fallback 9: Parent in Hospital — family emergency
+  GameEvent buildFallback_ParentInHospital() {
+    GameEvent e = new GameEvent();
+    e.type = "CAREER_CHOICE"; e.headline = "Family Emergency";
+    e.description = "Your dad called — he's been admitted to hospital. It's not life-threatening but he wants to see you.";
+    e.choices = new ArrayList<EventChoice>();
+    EventChoice c1 = new EventChoice(); c1.label = "Fly Home Immediately"; c1.familyEffect = 30; c1.rankingPointsEffect = -40; c1.description = "Drop everything. He needs you there."; e.choices.add(c1);
+    EventChoice c2 = new EventChoice(); c2.label = "Video Call + Send Flowers"; c2.familyEffect = 15; c2.moneyEffect = -5; c2.description = "Show you care without derailing your season."; e.choices.add(c2);
+    EventChoice c3 = new EventChoice(); c3.label = "Stay and Compete"; c3.rankingPointsEffect = 30; c3.familyEffect = -20; c3.description = "He'd want you to play. You hope."; e.choices.add(c3);
+    return e;
+  }
+
+  // Fallback 10: Gambling Night Gone Wrong — vice and risk
+  GameEvent buildFallback_GamblingNight() {
+    GameEvent e = new GameEvent();
+    e.type = "CAREER_CHOICE"; e.headline = "High-Stakes Night";
+    e.description = "A teammate invited you to a private poker game. You lost track and things escalated.";
+    e.choices = new ArrayList<EventChoice>();
+    EventChoice c1 = new EventChoice(); c1.label = "Cut Your Losses Now"; c1.moneyEffect = -100; c1.mentalEffect = -5; c1.description = "Walk away $100K lighter and a lot wiser."; e.choices.add(c1);
+    EventChoice c2 = new EventChoice(); c2.label = "Double Down"; c2.moneyEffect = (int)random(-200, 300); c2.fatigueEffect = 15; c2.description = "All-in. Fortune favours the bold — or destroys them."; e.choices.add(c2);
+    EventChoice c3 = new EventChoice(); c3.label = "Walk Out Early"; c3.moneyEffect = -20; c3.confidenceEffect = 5; c3.description = "Cut it short. Small loss, big lesson."; e.choices.add(c3);
+    return e;
+  }
+
+  // Fallback 11: Superfan Gets Too Close — personal safety
+  GameEvent buildFallback_Superfan() {
+    GameEvent e = new GameEvent();
+    e.type = "CAREER_CHOICE"; e.headline = "Overzealous Superfan";
+    e.description = "A fan has been showing up everywhere — hotel, practice, local coffee shop. Your team is concerned.";
+    e.choices = new ArrayList<EventChoice>();
+    EventChoice c1 = new EventChoice(); c1.label = "Get a Restraining Order"; c1.moneyEffect = -10; c1.reputationEffect = -5; c1.happinessEffect = 10; c1.description = "Legal protection. Some fans turn it into drama online."; e.choices.add(c1);
+    EventChoice c2 = new EventChoice(); c2.label = "Engage Kindly, Set Limits"; c2.reputationEffect = 8; c2.description = "Firm but human. Shows your character."; e.choices.add(c2);
+    EventChoice c3 = new EventChoice(); c3.label = "Ignore It"; c3.rankingPointsEffect = 5; c3.confidenceEffect = -8; c3.description = "Hope it blows over. It probably won't."; e.choices.add(c3);
+    return e;
+  }
+
+  // Fallback 12: Rival's Coach Makes Contact — suspicious approach
+  GameEvent buildFallback_RivalsCoach() {
+    GameEvent e = new GameEvent();
+    e.type = "CAREER_CHOICE"; e.headline = "Suspicious Approach";
+    e.description = "Your rival's head coach quietly reached out, saying they 'have information that could help you'.";
+    e.choices = new ArrayList<EventChoice>();
+    EventChoice c1 = new EventChoice(); c1.label = "Report It Immediately"; c1.reputationEffect = 12; c1.rankingPointsEffect = -5; c1.description = "Full transparency. Takes the high road."; e.choices.add(c1);
+    EventChoice c2 = new EventChoice(); c2.label = "Listen Carefully"; c2.rankingPointsEffect = 20; c2.reputationEffect = -15; c2.description = "Could be a game-changer. Could be a trap."; e.choices.add(c2);
+    EventChoice c3 = new EventChoice(); c3.label = "Ignore the Message"; c3.rankingPointsEffect = 5; c3.description = "Delete, block, move on. Cleaner that way."; e.choices.add(c3);
+    return e;
+  }
+
+  // Fallback 13: Social Media Cancel Attempt — public controversy
+  GameEvent buildFallback_CancelCulture() {
+    GameEvent e = new GameEvent();
+    e.type = "CAREER_CHOICE"; e.headline = "Cancel Culture Hits";
+    e.description = "An old clip resurfaced. It's being shared rapidly with the worst interpretation. Your mentions are on fire.";
+    e.choices = new ArrayList<EventChoice>();
+    EventChoice c1 = new EventChoice(); c1.label = "Fight Back Publicly"; c1.confidenceEffect = 10; c1.reputationEffect = -15; c1.description = "Defend yourself loudly. Divides opinion hard."; e.choices.add(c1);
+    EventChoice c2 = new EventChoice(); c2.label = "Go Completely Silent"; c2.reputationEffect = 5; c2.mentalEffect = -10; c2.description = "Say nothing. Let it fade. The silence eats at you."; e.choices.add(c2);
+    EventChoice c3 = new EventChoice(); c3.label = "Issue a Genuine Apology"; c3.reputationEffect = 20; c3.happinessEffect = -5; c3.moneyEffect = -20; c3.description = "Own it fully. Costly but earns lasting respect."; e.choices.add(c3);
+    return e;
+  }
+
+  // Fallback 14: Surprise Drug Test — integrity moment
+  GameEvent buildFallback_DrugTest() {
+    GameEvent e = new GameEvent();
+    e.type = "CAREER_CHOICE"; e.headline = "Unexpected Testing";
+    e.description = "Anti-doping officials showed up unannounced at training today. Everyone must test.";
+    e.choices = new ArrayList<EventChoice>();
+    EventChoice c1 = new EventChoice(); c1.label = "Test Clean (Confident)"; c1.confidenceEffect = 15; c1.reputationEffect = 10; c1.description = "Nothing to worry about. Walk straight in."; e.choices.add(c1);
+    EventChoice c2 = new EventChoice(); c2.label = "Test Clean (Nervous)"; c2.confidenceEffect = -5; c2.reputationEffect = 5; c2.description = "Clean but rattled. People notice the nerves."; e.choices.add(c2);
+    EventChoice c3 = new EventChoice(); c3.label = "Panic (Gray-Area Supps)"; c3.mentalEffect = -20; c3.confidenceEffect = -15; c3.reputationEffect = -25; c3.description = "You're clean — probably — but the paranoia is crushing."; e.choices.add(c3);
+    return e;
+  }
+
+  // Fallback 15: Controversial Brand Endorsement — money vs morals
+  GameEvent buildFallback_ControversialEndorsement() {
+    GameEvent e = new GameEvent();
+    e.type = "CAREER_CHOICE"; e.headline = "Big Money, Big Question";
+    e.description = "A major brand wants you as their face — $500K deal. But they've been criticized for labor practices.";
+    e.choices = new ArrayList<EventChoice>();
+    EventChoice c1 = new EventChoice(); c1.label = "Sign the Deal"; c1.moneyEffect = 500; c1.reputationEffect = -20; c1.happinessEffect = 15; c1.description = "Half a million dollars. Plenty of critics too."; e.choices.add(c1);
+    EventChoice c2 = new EventChoice(); c2.label = "Negotiate Ethics Clause"; c2.moneyEffect = 300; c2.reputationEffect = 5; c2.description = "Less money, cleaner conscience, real precedent set."; e.choices.add(c2);
+    EventChoice c3 = new EventChoice(); c3.label = "Decline on Principle"; c3.reputationEffect = 25; c3.confidenceEffect = 10; c3.description = "Costs you $500K but earns you something money can't buy."; e.choices.add(c3);
+    return e;
+  }
+
+  // ── Additional adult fallback builders (cases 15–18) ──────────────────────
+
+  // Fallback 16: College Scout — age-gated to teens; see comment inside
+  GameEvent buildFallback_CollegeScout() {
+    // Age-gated: only relevant for teens
+    // (caller doesn't pass player context, so this is a best-effort gate)
+    GameEvent e = new GameEvent();
+    e.type="CAREER_CHOICE"; e.headline="College Scout Spotted You";
+    e.description="A Division I scout attended your game. They're impressed and want a call next week. This could change everything.";
+    e.choices=new ArrayList<EventChoice>();
+    EventChoice c1=new EventChoice(); c1.label="Take the Meeting"; c1.description="Open the door to a scholarship."; c1.confidenceEffect=10; c1.rankingPointsEffect=5; e.choices.add(c1);
+    EventChoice c2=new EventChoice(); c2.label="Stay Focused on Junior Circuit"; c2.description="You're not ready to decide."; c2.rankingPointsEffect=15; c2.fatigueEffect=5; e.choices.add(c2);
+    EventChoice c3=new EventChoice(); c3.label="Politely Decline"; c3.description="You want to turn pro directly."; c3.confidenceEffect=8; c3.rankingPointsEffect=20; e.choices.add(c3);
+    return e;
+  }
+
+  // Fallback 17: Legendary Coach Offer
+  GameEvent buildFallback_NewCoachOffer() {
+    GameEvent e = new GameEvent();
+    e.type="CAREER_CHOICE"; e.headline="Legendary Coach Reaches Out";
+    e.description="A retired world champion wants to coach you — but their methods are notoriously brutal. Former pupils are either stars or burnt out.";
+    e.choices=new ArrayList<EventChoice>();
+    EventChoice c1=new EventChoice(); c1.label="Accept — Go All In"; c1.description="Commit to the brutal regime."; c1.confidenceEffect=15; c1.fatigueEffect=20; c1.rankingPointsEffect=30; e.choices.add(c1);
+    EventChoice c2=new EventChoice(); c2.label="Trial Period Only"; c2.description="Two weeks and see."; c2.fatigueEffect=10; c2.rankingPointsEffect=15; e.choices.add(c2);
+    EventChoice c3=new EventChoice(); c3.label="Decline Gracefully"; c3.description="Your current setup is working."; c3.confidenceEffect=5; c3.mentalEffect=5; e.choices.add(c3);
+    return e;
+  }
+
+  // Fallback 18: Locker Room Tension
+  GameEvent buildFallback_TeamConflict() {
+    GameEvent e = new GameEvent();
+    e.type="CAREER_CHOICE"; e.headline="Locker Room Tension";
+    e.description="A teammate publicly criticized your performance. The team is divided. Management wants you to handle it quietly.";
+    e.choices=new ArrayList<EventChoice>();
+    EventChoice c1=new EventChoice(); c1.label="Confront Them Directly"; c1.description="Clear the air one-on-one."; c1.confidenceEffect=10; c1.reputationEffect=5; e.choices.add(c1);
+    EventChoice c2=new EventChoice(); c2.label="Let It Go Publicly"; c2.description="Rise above it. Say nothing."; c2.reputationEffect=12; c2.mentalEffect=-5; e.choices.add(c2);
+    EventChoice c3=new EventChoice(); c3.label="Go to Management"; c3.description="Make it official."; c3.reputationEffect=-8; c3.rankingPointsEffect=10; e.choices.add(c3);
+    return e;
+  }
+
+  // Fallback 19: Lifestyle upgrade
+  GameEvent buildFallback_HousingUpgrade() {
+    GameEvent e = new GameEvent();
+    e.type="CAREER_CHOICE"; e.headline="Time to Level Up Your Lifestyle";
+    e.description="You've been living in a hotel suite for 3 months. Your agent says it's time to buy a place and settle. A penthouse and a suburban house are both available.";
+    e.choices=new ArrayList<EventChoice>();
+    EventChoice c1=new EventChoice(); c1.label="Buy the Penthouse"; c1.description="Status symbol. $2M. Worth it?"; c1.moneyEffect=-2000; c1.happinessEffect=20; c1.reputationEffect=10; e.choices.add(c1);
+    EventChoice c2=new EventChoice(); c2.label="Modest Suburban House"; c2.description="Sensible. Quiet. $400K."; c2.moneyEffect=-400; c2.happinessEffect=10; c2.familyEffect=8; e.choices.add(c2);
+    EventChoice c3=new EventChoice(); c3.label="Keep Renting"; c3.description="Stay flexible. No commitment."; c3.confidenceEffect=3; e.choices.add(c3);
+    return e;
+  }
+
+  // ── Youth / teen fallback builders ─────────────────────────────────────────
+
+  GameEvent buildFallback_SchoolMoment() {
+    GameEvent e = new GameEvent();
+    e.type = "CAREER_CHOICE"; e.headline = "Big Test Tomorrow";
+    e.description = "A major exam is tomorrow. Training ran late. You're exhausted but know you need to study. Your grades have been slipping.";
+    e.choices = new ArrayList<EventChoice>();
+    EventChoice c1 = new EventChoice(); c1.label = "Study All Night"; c1.description = "Push through. Grades matter."; c1.mentalEffect = 8; c1.fatigueEffect = 18; c1.happinessEffect = 5; e.choices.add(c1);
+    EventChoice c2 = new EventChoice(); c2.label = "Quick Review, Sleep"; c2.description = "Balanced approach."; c2.mentalEffect = 4; c2.fatigueEffect = 5; e.choices.add(c2);
+    EventChoice c3 = new EventChoice(); c3.label = "Skip Study, Rest"; c3.description = "Sport first, always."; c3.mentalEffect = -6; c3.rankingPointsEffect = 5; e.choices.add(c3);
+    return e;
+  }
+
+  GameEvent buildFallback_TeenMoment() {
+    GameEvent e = new GameEvent();
+    e.type = "CAREER_CHOICE"; e.headline = "Friday Night Dilemma";
+    e.description = "Your friends are going out Friday — a rare group gathering. You have early training Saturday morning. The FOMO is real.";
+    e.choices = new ArrayList<EventChoice>();
+    EventChoice c1 = new EventChoice(); c1.label = "Go Out, Live a Little"; c1.description = "One night won't ruin you."; c1.happinessEffect = 12; c1.fatigueEffect = 18; c1.rankingPointsEffect = -10; e.choices.add(c1);
+    EventChoice c2 = new EventChoice(); c2.label = "Show Up Early, Leave"; c2.description = "Balance both."; c2.happinessEffect = 6; c2.fatigueEffect = 8; e.choices.add(c2);
+    EventChoice c3 = new EventChoice(); c3.label = "Stay Home, Rest"; c3.description = "Champions sacrifice."; c3.rankingPointsEffect = 12; c3.confidenceEffect = 5; c3.happinessEffect = -5; e.choices.add(c3);
+    return e;
+  }
+
+  GameEvent buildFallback_FamilyMoment() {
+    GameEvent e = new GameEvent();
+    e.type = "CAREER_CHOICE"; e.headline = "Family Needs You";
+    e.description = "Your parents ask you to skip training this weekend for a family event — a reunion that only happens every few years. Your coach won't be happy.";
+    e.choices = new ArrayList<EventChoice>();
+    EventChoice c1 = new EventChoice(); c1.label = "Go to the Reunion"; c1.description = "Family first. Always."; c1.familyEffect = 15; c1.happinessEffect = 10; c1.rankingPointsEffect = -12; e.choices.add(c1);
+    EventChoice c2 = new EventChoice(); c2.label = "Go for One Day"; c2.description = "Show up, then train."; c2.familyEffect = 7; c2.fatigueEffect = 10; e.choices.add(c2);
+    EventChoice c3 = new EventChoice(); c3.label = "Apologise, Keep Training"; c3.description = "The career window is short."; c3.rankingPointsEffect = 10; c3.familyEffect = -10; e.choices.add(c3);
+    return e;
+  }
+
   // Loading animation
   String getLoadingText() {
     loadingFrame++;
@@ -419,7 +2388,10 @@ class AIScenarioEngine {
   }
 }
 
-// Data classes for events
+// ─── Data classes for events ────────────────────────────────────────────────
+// OOP: these are shared data-transfer objects used by AIScenarioEngine,
+// GameEngine, and UI rendering screens.
+
 class GameEvent {
   String type;
   String headline;
@@ -439,343 +2411,317 @@ class EventChoice {
   int moneyEffect         = 0;   // in $1,000s
   int familyEffect        = 0;
   int happinessEffect     = 0;
+  int relationshipEffect  = 0;
+  int wellbeingEffect     = 0;
+  int smartsEffect        = 0;
+  int looksEffect         = 0;
+  int popularityEffect    = 0;
+  int addictionRisk       = 0;   // 0-100 percent chance
+  int legalRisk           = 0;   // 0-100 percent chance
   String tag              = "";
 }
 
 interface LegacyCallback {
   void onComplete(String narrative);
 }
+
+
 // ============================================================
-// CAREER SCREEN - Main gameplay view (legacy week-based view)
+// GameCore.pde
 // ============================================================
-class CareerScreen extends BaseScreen {
-  final float LEFT_COL  =  20;
-  final float MID_COL   = 320;
-  final float RIGHT_COL = 780;
-  final float TOP_Y     =  62;
 
-  boolean hoverAdvance = false;
+/**
+ * GameCore — GameEngine, GameState, RankingSystem, and game loop management.
+ * OOP role: Composition (GameEngine uses many sub-systems),
+ *           Observer pattern (event notification), Strategy pattern (ranking)
+ * Collaborators: AIScenarioEngine, MatchEngine, TournamentCalendar, all Screens
+ */
 
-  String toastText  = "";
-  float  toastAlpha = 0;
+// ============================================================
+// SECTION 1 — ToastManager
+// ============================================================
 
-  CareerScreen(GameEngine e) { super(e); }
+/**
+ * ToastManager — Manages slide-up toast notifications.
+ * OOP role: Single Responsibility, implements GameEventListener (Observer)
+ */
+class ToastManager implements GameEventListener { // OOP: Observer pattern
+  ArrayList<Toast> _queue = new ArrayList<Toast>();
+  Toast _active = null;
+  int _displayFrames = 0;
+  final int DISPLAY_DURATION = 160;
 
-  void onEnter() {}
-
-  void render() {
-    Player p = engine.state.player;
-    if (p == null) return;
-
-    background(theme.BG);
-
-    if (engine.ai.hasNewEvent && engine.state.pendingEvent == null) {
-      engine.state.pendingEvent = engine.ai.pendingEvent;
-      engine.ai.hasNewEvent     = false;
-    }
-
-    drawLeftColumn(p);
-    drawMiddleColumn(p);
-    drawRightColumn(p);
-    drawToast();
+  void onGameEvent(GameEvent evt) { // OOP: Observer
+    if (evt != null && evt.headline != null)
+      push(evt.headline, color(245,197,24));
   }
-
-  void drawLeftColumn(Player p) {
-    float x = LEFT_COL, y = TOP_Y;
-    theme.drawCard(x, y, 285, 340);
-
-    fill(theme.TEXT);
-    textSize(20);
-    textAlign(LEFT, TOP);
-    text(p.name, x + 16, y + 14);
-
-    fill(theme.TEXT_DIM);
-    textSize(11);
-    String sideTerm = (engine.state.currentSport == Sport.SOCCER) ? "foot" : "hand";
-    text(p.nationality + " - " + p.dominantHand + " " + sideTerm, x + 16, y + 40);
-
-    fill(theme.ACCENT);
-    textSize(11);
-    text(p.playStyle.toString().replace("_", " "), x + 16, y + 56);
-
-    CareerPhase phase = p.currentPhase(engine.state.currentYear);
-    color phaseCol = phaseColor(phase);
-    fill(phaseCol, 40);
-    rect(x + 16, y + 72, 120, 20, 10);
-    fill(phaseCol);
-    textSize(10);
-    textAlign(CENTER, CENTER);
-    text(phase.toString(), x + 76, y + 82);
-
-    y += 104;
-    PlayerAttributes eff = p.effectiveAttributes();
-    SportConfig sc = engine.state.sportConfig != null ? engine.state.sportConfig : getSportConfig(Sport.TENNIS);
-    String[] statNames = sc.statNames;
-    int[]    statVals  = {eff.serve, eff.forehand, eff.backhand, eff.volley, eff.speed, eff.stamina, eff.mental};
-    color[]  statCols  = {theme.ACCENT, theme.ACCENT2, theme.ACCENT2, theme.SUCCESS, theme.SUCCESS, theme.SUCCESS, theme.DANGER};
-
-    for (int i = 0; i < statNames.length; i++) {
-      fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, CENTER);
-      text(statNames[i], x + 16, y + 8);
-      fill(theme.TEXT); textAlign(RIGHT, CENTER);
-      text(statVals[i], x + 260, y + 8);
-      theme.drawStatBar(x + 16, y + 16, 253, 6, statVals[i], 99, statCols[i]);
-      y += 32;
-    }
-
-    y += 8;
-    fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, CENTER);
-    text("FATIGUE", LEFT_COL + 16, y);
-    fill(p.form.fatigue > 70 ? theme.DANGER : theme.TEXT_DIM);
-    textAlign(RIGHT, CENTER);
-    text((int)p.form.fatigue + "%", LEFT_COL + 260, y);
-    theme.drawStatBar(LEFT_COL + 16, y + 8, 253, 6, p.form.fatigue, 100,
-                      p.form.fatigue > 70 ? theme.DANGER : theme.ACCENT2);
-
-    y += 24;
-    fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, CENTER);
-    text("CONFIDENCE", LEFT_COL + 16, y);
-    fill(theme.TEXT); textAlign(RIGHT, CENTER);
-    text((int)p.form.confidence + "%", LEFT_COL + 260, y);
-    theme.drawStatBar(LEFT_COL + 16, y + 8, 253, 6, p.form.confidence, 100, theme.SUCCESS);
-
-    if (p.health.status != InjuryStatus.HEALTHY) {
-      y += 28;
-      fill(theme.DANGER, 40);
-      rect(LEFT_COL + 16, y, 250, 22, 4);
-      fill(theme.DANGER); textSize(11); textAlign(CENTER, CENTER);
-      text("! " + p.health.injuredPart + " - " + p.health.weeksRemaining + " wks",
-           LEFT_COL + 141, y + 11);
-    }
+  void push(String msg, color col) { _queue.add(new Toast(msg, col)); }
+  void pushSuccess(String msg) { push(msg, color(46,204,138)); }
+  void pushDanger(String msg) { push(msg, color(255,77,77)); }
+  void update() {
+    if (_active==null && !_queue.isEmpty()) { _active=_queue.remove(0); _displayFrames=DISPLAY_DURATION; }
+    if (_active!=null) { _displayFrames--; if (_displayFrames<=0) _active=null; }
   }
-
-  void drawMiddleColumn(Player p) {
-    float x = MID_COL, y = TOP_Y;
-    theme.drawCard(x, y, 440, 120);
-
-    float[] vals = {
-      p.career.worldRanking,
-      p.career.rankingPoints,
-      p.career.titlesWon,
-      p.career.grandSlamTitles,
-      p.career.weeksAtNumberOne,
-      p.career.prizeMoney / 1000
-    };
-    SportConfig sc2 = engine.state.sportConfig != null ? engine.state.sportConfig : getSportConfig(Sport.TENNIS);
-    String[] lbls = {sc2.rankLabel, sc2.ptsLabel, sc2.titlesLabel, sc2.majorLabel, "WKS #1", "PRIZE ($K)"};
-
-    for (int i = 0; i < 3; i++) {
-      float cx = x + 16 + i * 140;
-      fill(theme.ACCENT);
-      textSize(24);
-      textAlign(LEFT, TOP);
-      text(i == 0 ? "#" + (int)vals[i] : (int)vals[i] + "", cx, y + 16);
-      fill(theme.TEXT_DIM);
-      textSize(10);
-      text(lbls[i], cx, y + 50);
-    }
-    for (int i = 3; i < 6; i++) {
-      float cx = x + 16 + (i - 3) * 140;
-      fill(theme.TEXT);
-      textSize(20);
-      textAlign(LEFT, TOP);
-      text(i == 5 ? formatMoney(p.career.prizeMoney) : (int)vals[i] + "", cx, y + 66);
-      fill(theme.TEXT_DIM);
-      textSize(10);
-      text(lbls[i], cx, y + 92);
-    }
-
-    y += 132;
-
-    if (engine.ai.isLoading) {
-      // Animated loading card
-      theme.drawCard(x, y, 440, 80, true);
-      float dotPhase = (frameCount * 0.08f) % (TWO_PI);
-      for (int d = 0; d < 3; d++) {
-        float dotAlpha = 128 + 127 * sin(dotPhase - d * 0.8);
-        fill(255, 210, 60, dotAlpha); noStroke();
-        ellipse(x + 220 - 20 + d*20, y+44, 10, 10);
-      }
-      fill(theme.TEXT_DIM); textSize(11); textAlign(CENTER, TOP);
-      text("AI IS WRITING YOUR STORY...", x + 220, y+14);
-    } else if (engine.state.pendingEvent != null) {
-      drawEventPanel(engine.state.pendingEvent, x, y, 440);
-    } else {
-      theme.drawCard(x, y, 440, 80);
-      fill(theme.TEXT_DIM); textSize(12); textAlign(LEFT, CENTER);
-      if (!engine.state.lastEvent.isEmpty()) text(engine.state.lastEvent, x + 16, y + 40);
-      else                                   text("Press SPACE to advance one week", x + 16, y + 40);
-    }
-
-    y += 340;
-
-    if (!p.career.recentResults.isEmpty()) {
-      sectionHeader("RECENT RESULTS", x, y);
-      y += 16;
-      int shown = min(4, p.career.recentResults.size());
-      for (int i = 0; i < shown; i++) {
-        MatchResult r = p.career.recentResults.get(i);
-        drawResultRow(r, x, y, 440);
-        y += 36;
-      }
-    }
+  void draw() {
+    update();
+    if (_active==null) return;
+    float prog = _displayFrames/(float)DISPLAY_DURATION;
+    float alpha = prog>0.85?map(prog,1.0,0.85,0,255):prog<0.15?map(prog,0.15,0,255,0):255;
+    float slideY = prog>0.9?map(prog,1.0,0.9,-60,0):0;
+    float pw=420, ph=48, px=width/2-pw/2, py=height-ph-16+slideY;
+    fill(19,21,28,alpha*0.95); stroke(_active.col,alpha); strokeWeight(1.5);
+    rect(px,py,pw,ph,8); noStroke();
+    fill(_active.col,alpha); textSize(12); textAlign(CENTER,CENTER);
+    text(_active.msg, px+pw/2, py+ph/2);
+    fill(_active.col,alpha*0.4); rect(px,py+ph-3,pw*(1-prog),3,0,0,4,4);
   }
-
-  void drawResultRow(MatchResult r, float x, float y, float w) {
-    fill(r.playerWon ? color(20, 45, 25) : color(45, 20, 20));
-    rect(x, y, w, 32, 4);
-    fill(r.playerWon ? theme.SUCCESS : theme.DANGER);
-    textSize(11); textAlign(LEFT, CENTER);
-    text(r.playerWon ? "W" : "L", x + 12, y + 16);
-    fill(theme.TEXT); textAlign(LEFT, CENTER);
-    text(r.tournamentName + " " + r.round, x + 30, y + 16);
-    fill(theme.TEXT_DIM); textAlign(RIGHT, CENTER);
-    text(r.score + " +" + r.rankingPointsAwarded + "pts", x + w - 12, y + 16);
+  boolean handleClick(int mx,int my) {
+    if (_active==null) return false;
+    float pw=420, ph=48, px=width/2-pw/2, py=height-ph-16;
+    if (mx>=px&&mx<=px+pw&&my>=py&&my<=py+ph) { _active=null; return true; }
+    return false;
   }
-
-  void drawRightColumn(Player p) {
-    float x = RIGHT_COL, y = TOP_Y;
-    hoverAdvance = theme.isHover(hoverX, hoverY, x, y, 380, 56);
-    fill(hoverAdvance ? theme.ACCENT : color(30, 38, 22));
-    stroke(theme.ACCENT);
-    strokeWeight(hoverAdvance ? 2 : 1);
-    rect(x, y, 380, 56, 6);
-    noStroke();
-    fill(hoverAdvance ? theme.BG : theme.ACCENT);
-    textSize(15);
-    textAlign(CENTER, CENTER);
-    text("ADVANCE WEEK [SPACE]", x + 190, y + 28);
-
-    y += 70;
-    theme.drawCard(x, y, 380, 260);
-    fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, TOP);
-    text("SEASON CALENDAR", x + 16, y + 14);
-
-    float cy = y + 30;
-    int week = 0;
-    ArrayList<Tournament> all = engine.calendar.schedule;
-    int shown = 0;
-    for (Tournament t : all) {
-      if (shown >= 7) break;
-      boolean isCurrent = t.week == week;
-      if (t.week >= week || shown == 0) {
-        drawCalendarRow(t, x + 12, cy, 356, isCurrent);
-        cy += 34;
-        shown++;
-      }
-    }
-
-    y += 274;
-    sectionHeader("CAREER LOG", x, y);
-    y += 16;
-    fill(theme.TEXT_DIM); textSize(11); textAlign(LEFT, TOP);
-    ArrayList<String> hist = p.career.careerHistory;
-    int start = max(0, hist.size() - 6);
-    for (int i = start; i < hist.size(); i++) {
-      text("- " + hist.get(i), x, y);
-      y += 18;
-    }
-  }
-
-  void drawCalendarRow(Tournament t, float x, float y, float w, boolean current) {
-    if (current) {
-      fill(theme.ACCENT, 30);
-      rect(x, y, w, 30, 3);
-    }
-    color tierCol = tierColor(t.tier);
-    fill(tierCol);
-    ellipse(x + 12, y + 15, 8, 8);
-
-    fill(current ? theme.ACCENT : theme.TEXT_DIM);
-    textSize(10); textAlign(LEFT, CENTER);
-    text("W" + t.week, x + 24, y + 15);
-
-    fill(current ? theme.ACCENT : theme.TEXT);
-    textSize(12); textAlign(LEFT, CENTER);
-    text(t.name, x + 50, y + 15);
-
-    String vLabel = t.venueLabel.isEmpty() ? t.surface.toString().replace("_", " ") : t.venueLabel;
-    fill(surfaceColor(t.surface), 60);
-    rect(x + w - 70, y + 6, 62, 18, 9);
-    fill(surfaceColor(t.surface));
-    textSize(9); textAlign(CENTER, CENTER);
-    text(vLabel, x + w - 39, y + 15);
-  }
-
-  color phaseColor(CareerPhase p) {
-    switch (p) {
-      case JUNIOR:    return color(100, 160, 255);
-      case RISING:    return color( 80, 220, 120);
-      case PRIME:     return color(220, 160,  40);
-      case VETERAN:   return color(200, 100,  60);
-      case DECLINING: return color(160,  80,  80);
-      default:        return theme.TEXT_DIM;
-    }
-  }
-
-  color tierColor(TournamentTier t) {
-    switch (t) {
-      case GRAND_SLAM:   return color(220, 160,  40);
-      case MASTERS_1000: return color(180,  80, 220);
-      case ATP_500:      return color( 60, 140, 220);
-      case ATP_250:      return color( 60, 180, 120);
-      default:           return theme.TEXT_DIM;
-    }
-  }
-
-  color surfaceColor(Surface s) {
-    switch (s) {
-      case CLAY:        return color(200, 100,  60);
-      case GRASS:       return color( 60, 160,  80);
-      case INDOOR_HARD: return color(100, 100, 200);
-      default:          return color(100, 140, 200);
-    }
-  }
-
-  void drawToast() {
-    if (toastAlpha > 0) {
-      toastAlpha -= 3;
-      fill(theme.PANEL, toastAlpha);
-      stroke(theme.ACCENT, toastAlpha);
-      strokeWeight(1);
-      rect(width / 2 - 200, height - 80, 400, 44, 6);
-      noStroke();
-      fill(theme.TEXT, toastAlpha);
-      textSize(13); textAlign(CENTER, CENTER);
-      text(toastText, width / 2, height - 58);
-    }
-  }
-
-  void showToast(String msg) {
-    toastText  = msg;
-    toastAlpha = 255;
-  }
-
-  void onClick(int mx, int my) {
-    if (theme.isHover(mx, my, RIGHT_COL, TOP_Y, 380, 56)) {
-      engine.ageUp();
-      return;
-    }
-    if (engine.state.pendingEvent != null && engine.state.pendingEvent.choices != null) {
-      ArrayList<EventChoice> choices = engine.state.pendingEvent.choices;
-      float ex = MID_COL, ey = TOP_Y + 132 + 120;
-      for (int i = 0; i < choices.size(); i++) {
-        if (theme.isHover(mx, my, ex + 14, ey, 412, 52)) {
-          engine.applyChoice(choices.get(i));
-          showToast("Choice made: " + choices.get(i).label);
-          return;
-        }
-        ey += 62;
-      }
-    }
-  }
-
-  void onHover(int mx, int my) { super.onHover(mx, my); }
 }
+class Toast { String msg; color col; Toast(String m, color c){msg=m;col=c;} }
+
 // ============================================================
-// GAME ENGINE  —  age-based loop, activity system, state
+// SECTION 2 — PopupManager (with GameEventListener)
 // ============================================================
-class GameEngine {
+
+class PopupManager implements GameEventListener { // OOP: Observer pattern
+  ArrayList<GamePopup> queue = new ArrayList<GamePopup>();
+  GamePopup active = null;
+  int displayFrames = 0;
+  final int DISPLAY_DURATION = 180; // 3 seconds at 60fps
+
+  void onGameEvent(GameEvent evt) { // OOP: Observer
+    if (evt != null && evt.headline != null)
+      push("EVENT", evt.headline, color(245,197,24));
+  }
+
+  void push(String headline, String body, color accent) {
+    queue.add(new GamePopup(headline, body, accent));
+  }
+
+  void pushAchievement(String title) {
+    push("ACHIEVEMENT UNLOCKED", title, color(255, 200, 55));
+  }
+
+  void update() {
+    if (active == null && !queue.isEmpty()) {
+      active = queue.remove(0);
+      displayFrames = DISPLAY_DURATION;
+    }
+    if (active != null) {
+      displayFrames--;
+      if (displayFrames <= 0) active = null;
+    }
+  }
+
+  void draw() {
+    update();
+    if (active == null) return;
+    float progress = displayFrames / (float)DISPLAY_DURATION;
+    float alpha = progress > 0.85 ? map(progress, 1.0, 0.85, 0, 255) :
+                  progress < 0.15 ? map(progress, 0.15, 0, 255, 0) : 255;
+    float slideY = progress > 0.9 ? map(progress, 1.0, 0.9, -100, 0) : 0;
+
+    float pw = 480, ph = 100;
+    float px = width/2 - pw/2;
+    float py = 60 + slideY;
+
+    fill(0, 0, 0, alpha * 0.7);
+    noStroke();
+    rect(px + 4, py + 4, pw, ph, 10);
+
+    fill(14, 20, 36, alpha);
+    stroke(active.accent, alpha);
+    strokeWeight(2);
+    rect(px, py, pw, ph, 10);
+    noStroke();
+
+    fill(active.accent, alpha);
+    rect(px, py + 12, 5, ph - 24, 0, 3, 3, 0);
+
+    fill(active.accent, alpha);
+    textSize(10); textAlign(LEFT, TOP);
+    text(active.headline, px + 18, py + 14);
+
+    fill(228, 234, 248, alpha);
+    textSize(15); textAlign(LEFT, TOP);
+    text(active.body, px + 18, py + 34);
+
+    // Progress bar
+    fill(active.accent, alpha * 0.3);
+    rect(px, py + ph - 4, pw, 4, 0, 0, 10, 10);
+    fill(active.accent, alpha);
+    rect(px, py + ph - 4, pw * (1-progress), 4, 0, 0, 10, 10);
+  }
+
+  boolean handleClick(int mx, int my) {
+    if (active == null) return false;
+    float pw = 480, ph = 100;
+    float px = width/2 - pw/2, py = 60;
+    if (mx >= px && mx <= px+pw && my >= py && my <= py+ph) {
+      active = null; displayFrames = 0; return true;
+    }
+    return false;
+  }
+}
+
+class GamePopup {
+  String headline, body;
+  color accent;
+  GamePopup(String h, String b, color a) { headline=h; body=b; accent=a; }
+}
+
+// ============================================================
+// SECTION 3 — FloatingTextManager (improved: 16px, 80 frame lifetime)
+// ============================================================
+
+class FloatingText {
+  String text;
+  float x, y, alpha;
+  color col;
+  FloatingText(String t, float x, float y, color c) {
+    this.text=t; this.x=x; this.y=y; this.alpha=255; this.col=c;
+  }
+  boolean update() { y -= 1.2; alpha -= (255.0/80.0); return alpha > 0; }
+  void draw() {
+    fill(col, alpha); textSize(16); textAlign(CENTER, CENTER);
+    text(text, x, y);
+  }
+}
+
+class FloatingTextManager {
+  ArrayList<FloatingText> texts = new ArrayList<FloatingText>();
+  void add(String t, float x, float y, boolean positive) {
+    texts.add(new FloatingText(t, x, y, positive ? color(45,210,115) : color(240,72,72)));
+  }
+  void update() {
+    for (int i = texts.size()-1; i >= 0; i--)
+      if (!texts.get(i).update()) texts.remove(i);
+  }
+  void draw() { for (FloatingText ft : texts) ft.draw(); }
+}
+
+// ============================================================
+// SECTION 4 — GameState
+// ============================================================
+
+class GameState {
+  Player    player;
+  int       currentYear = 2018;
+  int       currentWeek = 1;
+  GameEvent pendingEvent        = null;
+  TournamentRun lastTournamentRun = null;
+  String    lastEvent           = "";
+  boolean   retirementEligible  = false;
+  ArrayList<String> decisionLog = new ArrayList<String>();
+  Sport       currentSport  = Sport.TENNIS;
+  SportConfig sportConfig   = null;
+  LifePhase   lifePhase     = LifePhase.CHILDHOOD;
+  boolean     inUniversity  = false;
+  String      pendingMatchAction   = "";
+  int         proCareerStartYear   = -1;
+  ArrayList<Rival> rivals          = new ArrayList<Rival>();
+  TutorialSystem tutorial = new TutorialSystem();
+  PopupManager popups = new PopupManager();
+  FloatingTextManager floatingTexts = new FloatingTextManager();
+  ArrayList<GameEventListener> listeners = new ArrayList<GameEventListener>(); // OOP: Observer
+  ToastManager toastManager = new ToastManager();
+
+  // Live tournament progression state
+  Tournament     activeTournament        = null;
+  int            activeTournamentRoundIdx = 0;
+  RoundName[]    activeTournamentRounds   = null;
+  ArrayList<MatchResult> activeTournamentResults = new ArrayList<MatchResult>();
+  float          pendingWinProbBonus      = 0;
+  OpponentProfile _pendingMatchOpp        = null;
+
+  // Live match (set-by-set / period-by-period) state
+  boolean           inLiveMatch        = false;
+  int               livePlayerSets     = 0;     // sets/quarters/halves won by player
+  int               liveOppSets        = 0;     // sets/quarters/halves won by opponent
+  int               liveSegment        = 0;     // current segment index (0-based)
+  int               liveSegmentsToWin  = 2;     // sets needed to win the match
+  ArrayList<String> liveSegmentLog     = new ArrayList<String>(); // e.g. ["6-3 ✓", "4-6 ✗", "6-4 ✓"]
+  OpponentProfile   liveOpp            = null;
+  Tournament        liveTournament     = null;
+  RoundName         liveRound          = null;
+  String            liveNarrative      = "";    // hardcoded or AI-generated narrative for current segment
+  boolean           liveWaitingForAI   = false; // true while AI is generating match moment
+}
+
+// ============================================================
+// SECTION 5 — RankingSystem (with Strategy pattern)
+// ============================================================
+
+class RankingSystem {
+  ArrayList<WorldPlayer> worldPlayers = new ArrayList<WorldPlayer>();
+
+  // OOP: Strategy pattern — ranking calculation delegates to strategy object
+  RankingStrategy _rankingStrategy = new ProRankingStrategy();
+  void setStrategy(RankingStrategy s) { _rankingStrategy = s; } // OOP: Strategy
+  int calculateWithStrategy(int points, int age) { return _rankingStrategy.calculateRanking(points, age); }
+
+  void generateWorldPlayers(int count, SportConfig cfg) {
+    ArrayList<String> first = new ArrayList<String>();
+    ArrayList<String> last  = new ArrayList<String>();
+    ArrayList<String> nat   = new ArrayList<String>();
+
+    for (int i = 0; i < cfg.oppFirst.length; i++) {
+      first.add(cfg.oppFirst[i]);
+      last.add(cfg.oppLast[i]);
+      nat.add(cfg.oppNations[i]);
+    }
+    String[] gFirst = {"Marco","Alexei","Diego","Paulo","Kim","Chen","Ivan","Raj","Omar","Luis",
+                       "Andre","Victor","Felix","Emil","Hans","Pablo","Jorge","Finn","Lars","Sven",
+                       "Bruno","Gabriel","Carlos","Antonio","Pedro","Nicolas","Adrian","Max","Ben","Jake",
+                       "Luca","Tomas","Yuki","Hiro","Wei","Soo","Ali","Amir","Kemal","Thiago",
+                       "Damien","Remi","Pierre","Franco","Sergio"};
+    String[] gLast  = {"Romano","Petrov","Cruz","Santos","Park","Wang","Novak","Patel","Hassan","Gomez",
+                       "Silva","Costa","Weber","Schulz","Hansen","Moreno","Rivera","Berg","Andersen","Larsson",
+                       "Ferrari","Oliveira","Rodriguez","Fernandez","Martinez","Torres","Reyes","Fischer","Muller","Wilson",
+                       "Rossi","Dvorak","Tanaka","Sato","Chen","Kim","Sahin","Nazari","Yilmaz","Cavalcanti",
+                       "Durand","Laurent","Dupont","Russo","Esposito"};
+    String[] gNat   = {"Italy","Russia","Mexico","Brazil","Korea","China","Serbia","India","Egypt","Spain",
+                       "Brazil","Portugal","Germany","Germany","Denmark","Spain","Mexico","Norway","Denmark","Sweden",
+                       "Italy","Brazil","Argentina","Spain","Spain","Spain","Mexico","Germany","Germany","USA",
+                       "Italy","Czech","Japan","Japan","China","Korea","Turkey","Iran","Turkey","Brazil",
+                       "France","France","France","Italy","Italy"};
+
+    for (int i = 0; i < gFirst.length && first.size() < 50; i++) {
+      first.add(gFirst[i]); last.add(gLast[i]); nat.add(gNat[i]);
+    }
+
+    worldPlayers.clear();
+    int n = min(count, first.size());
+    for (int i = 0; i < n; i++) {
+      WorldPlayer wp = new WorldPlayer();
+      wp.name        = first.get(i) + " " + last.get(i);
+      wp.nationality = nat.get(i);
+      wp.ranking     = i + 1;
+      wp.points      = (int)map(i, 0, n, 11000, 1500) + (int)random(-200, 200);
+      worldPlayers.add(wp);
+    }
+  }
+}
+
+// ============================================================
+// SECTION 6 — WorldPlayer
+// ============================================================
+
+class WorldPlayer {
+  String name, nationality;
+  int    ranking, points;
+}
+
+// ============================================================
+// SECTION 7 — GameEngine  OOP: Composition
+// ============================================================
+
+class GameEngine { // OOP: Composition
   GameState           state;
   AIScenarioEngine    ai;
   MatchEngine         matchEngine;
@@ -794,6 +2740,10 @@ class GameEngine {
   WorldRankScreen  worldScreen;
   LifestyleScreen  lifestyleScreen;
   LegacyScreen     legacyScreen;
+
+  ArrayList<GameEventListener> _listeners = new ArrayList<GameEventListener>(); // OOP: Observer
+  ToastManager toastManager;
+  HelpOverlay helpOverlay = new HelpOverlay();
 
   GameEngine() {}
 
@@ -816,6 +2766,15 @@ class GameEngine {
     legacyScreen    = new LegacyScreen(this);
 
     activeScreen = menuScreen;
+
+    toastManager = new ToastManager();
+    _listeners.add(state.popups);
+    _listeners.add(toastManager);
+    // OOP: Strategy pattern — set ranking strategy based on player phase
+  }
+
+  void notifyListeners(GameEvent evt) { // OOP: Observer pattern
+    for (GameEventListener l : _listeners) l.onGameEvent(evt);
   }
 
   void render() {
@@ -829,6 +2788,8 @@ class GameEngine {
     if (state != null && state.floatingTexts != null) state.floatingTexts.update();
     if (state != null && state.popups != null) state.popups.draw();
     if (state != null && state.floatingTexts != null) state.floatingTexts.draw();
+    if (toastManager != null) toastManager.draw();
+    helpOverlay.draw();
   }
 
   void drawStatusBar() {
@@ -850,7 +2811,10 @@ class GameEngine {
     text("Age "+p.age(state.currentYear)+"  ·  "+state.currentYear+"  ·  Week "+state.currentWeek, 56, 38);
     // Center stat chips
     int age = p.age(state.currentYear);
-    String rankStr = age<18?"#"+p.career.juniorRanking+" JR":(p.career.worldRanking>=9999?"NCAA":"#"+p.career.worldRanking);
+    String rankStr = age <= 5  ? "Unranked" :
+                     age < 18 ? (p.career.juniorRanking >= 400 ? "Unranked" : "#"+p.career.juniorRanking+" JR") :
+                     state.lifePhase == LifePhase.UNIVERSITY ? "NCAA" :
+                     p.career.worldRanking >= 9999 ? "Unranked" : "#"+p.career.worldRanking;
     String moneyStr = p.finances!=null?"$"+(int)(p.finances.savings/1000)+"K":"$0";
     drawStatChip(rankStr,"RANK",  width/2-120, 27, color(255,210,60));
     drawStatChip(moneyStr,"WEALTH",width/2,     27, color(50,220,120));
@@ -949,8 +2913,27 @@ class GameEngine {
       simulateEarlyLifeYear(p, age);
     }
 
-    if (p.age(state.currentYear) >= 13) {
+    int ageNow = p.age(state.currentYear);
+    float aiEventChance;
+    if (ageNow < 8)       aiEventChance = 0.0;   // CHILDHOOD: no AI events, just narrative
+    else if (ageNow < 13) aiEventChance = 0.40;  // EARLY_SCHOOL: ~2 in 5 years
+    else if (ageNow < 18) aiEventChance = 0.65;  // TEEN: ~2 in 3 years
+    else                  aiEventChance = 1.0;   // PRO/UNIVERSITY: every year
+    if (random(1) < aiEventChance) {
       ai.generateWeeklyEvent(p, state.currentYear, 0, state.currentSport);
+    }
+    // Additional personal life event for PRO (30% chance if no AI event pending)
+    if (state.lifePhase == LifePhase.PRO && state.pendingEvent == null) {
+      float lifeRoll = random(1);
+      if (lifeRoll < 0.12) {
+        state.pendingEvent = buildFriendshipEvent(state.player);
+      } else if (lifeRoll < 0.22) {
+        state.pendingEvent = buildMentalHealthEvent(state.player);
+      } else if (lifeRoll < 0.30) {
+        state.pendingEvent = buildLifestyleChoiceEvent(state.player);
+      } else if (lifeRoll < 0.35) {
+        state.pendingEvent = buildCharityAndImageEvent(state.player);
+      }
     }
   }
 
@@ -1031,6 +3014,10 @@ class GameEngine {
           state.lastEvent = evts[(int)random(evts.length)];
           p.addLifeEvent(state.lastEvent, state.currentYear);
         }
+        // Childhood life event: 25% chance per year (age 6+)
+        if (state.pendingEvent == null && random(1) < 0.25 && age >= 6) {
+          state.pendingEvent = buildYouthLifeEvent(p, age, state.currentSport, state.lifePhase);
+        }
         break;
 
       case EARLY_SCHOOL:
@@ -1047,6 +3034,15 @@ class GameEngine {
           state.lastEvent = evts[(int)random(evts.length)];
           p.addLifeEvent(state.lastEvent, state.currentYear);
         }
+        // Sport big game (10%) or life event (30%): mutually exclusive per year
+        if (state.pendingEvent == null) {
+          float r = random(1);
+          if (r < 0.10 && age >= 10) {
+            state.pendingEvent = buildYouthBigGameEvent(p, age, state.currentSport);        // 10%: sport big game
+          } else if (r < 0.40) {
+            state.pendingEvent = buildYouthLifeEvent(p, age, state.currentSport, state.lifePhase); // 30%: life event
+          }
+        }
         break;
 
       case TEEN:
@@ -1059,14 +3055,24 @@ class GameEngine {
           state.pendingEvent = buildUniversityDecisionEvent(p);
         }
         if (state.lastEvent.isEmpty()) {
+          String sportLower = state.currentSport.toString().toLowerCase();
           String[] evts = {
-            "Competed in junior regional championships.",
+            "Junior " + sportLower + " regional championships.",
             "Signed first junior sponsorship — small, but meaningful.",
             "Intense summer training camp — major growth.",
             "First teenage heartbreak. Life goes on."
           };
           state.lastEvent = evts[(int)random(evts.length)];
           p.addLifeEvent(state.lastEvent, state.currentYear);
+        }
+        // Sport big game (15%) or life event (40%): mutually exclusive per year
+        if (state.pendingEvent == null) {
+          float r = random(1);
+          if (r < 0.15 && age >= 13) {
+            state.pendingEvent = buildYouthBigGameEvent(p, age, state.currentSport);        // 15%: sport big game
+          } else if (r < 0.55) {
+            state.pendingEvent = buildYouthLifeEvent(p, age, state.currentSport, state.lifePhase); // 40%: life event
+          }
         }
         break;
 
@@ -1089,6 +3095,13 @@ class GameEngine {
           };
           state.lastEvent = evts[(int)random(evts.length)];
           p.addLifeEvent(state.lastEvent, state.currentYear);
+        }
+        // University personal events
+        if (state.pendingEvent == null) {
+          float r = random(1);
+          if (r < 0.35) state.pendingEvent = buildStudyMomentEvent(state.player);
+          else if (r < 0.55) state.pendingEvent = buildFriendshipEvent(state.player);
+          else if (r < 0.65) state.pendingEvent = buildMentalHealthEvent(state.player);
         }
         break;
 
@@ -1199,27 +3212,48 @@ class GameEngine {
   void updateRanking() {
     Player p = state.player;
     int age = p.age(state.currentYear);
-    int pts = p.career.rankingPoints;
+    // OOP: Strategy pattern — delegate to appropriate ranking strategy
+    RankingStrategy strategy;
     if (age < 18) {
-      int r = pts>=2000?(int)random(1,5):pts>=1000?(int)random(5,25):pts>=500?(int)random(25,80):pts>=200?(int)random(80,200):(int)random(200,500);
-      p.career.juniorRanking = (int)lerp(p.career.juniorRanking, r, 0.3);
-      p.career.worldRanking = 9999;
+      strategy = new JuniorRankingStrategy();
+      int target = strategy.calculateRanking(p.career.rankingPoints, age);
+      // Age-based floor: can't reach top ranks too young
+      int ageFloor = age <= 5  ? 9999 :   // too young for rankings
+                     age <= 9  ? 300  :   // local/recreational only
+                     age <= 11 ? 200  :   // regional circuit
+                     age <= 13 ? 120  :   // national circuit entry
+                     age <= 15 ? 60   :   // national level
+                                 20;      // elite junior (16-17)
+      target = max(target, ageFloor);
+      p.career.juniorRanking = (int)lerp(p.career.juniorRanking, target, 0.25);
+      p.career.worldRanking  = 9999; // not yet on pro tour
     } else if (state.lifePhase == LifePhase.UNIVERSITY) {
+      strategy = new UniversityRankingStrategy();
       p.career.worldRanking = 9999;
     } else {
-      int r = pts>=10000?(int)random(1,3):pts>=7000?(int)random(3,8):pts>=5000?(int)random(8,20):pts>=3000?(int)random(20,50):pts>=1500?(int)random(50,100):pts>=500?(int)random(100,200):(int)random(200,500);
-      p.career.worldRanking = (int)lerp(p.career.worldRanking, r, 0.4);
+      strategy = new ProRankingStrategy();
+      // New pros always start far down the rankings — can't skip the grind
+      int yearsAsPro = max(0, age - 18);
+      int proFloor   = yearsAsPro <= 1 ? 300 :
+                       yearsAsPro <= 3 ? 150 :
+                       yearsAsPro <= 5 ? 80  : 1;
+      int target = max(strategy.calculateRanking(p.career.rankingPoints, age), proFloor);
+      p.career.worldRanking = (int)lerp(p.career.worldRanking, target, 0.35);
     }
   }
 
   void applyChoice(EventChoice choice) {
     Player p = state.player;
-    p.form.confidence       = constrain(p.form.confidence + choice.confidenceEffect, 0, 100);
-    p.form.fatigue          = constrain(p.form.fatigue    + choice.fatigueEffect,    0, 100);
-    p.baseAttributes.mental = constrain(p.baseAttributes.mental + choice.mentalEffect, 30, 99);
+    // Scale confidence/fatigue/mental by 1.4x for heavier decision weight
+    p.form.confidence       = constrain(p.form.confidence + (int)(choice.confidenceEffect * 1.4), 0, 100);
+    p.form.fatigue          = constrain(p.form.fatigue    + (int)(choice.fatigueEffect    * 1.4), 0, 100);
+    p.baseAttributes.mental = constrain(p.baseAttributes.mental + (int)(choice.mentalEffect * 1.4), 30, 99);
     if (choice.reputationEffect >= 0) p.reputation.applyPositive(choice.reputationEffect);
     else                              p.reputation.applyNegative(-choice.reputationEffect);
-    p.career.addPoints(choice.rankingPointsEffect);
+    // Age-scale ranking point gains — kids don't earn adult-level tour points
+    int age = p.age(state.currentYear);
+    float pointScale = age <= 9 ? 0.0 : age <= 13 ? 0.2 : age <= 15 ? 0.5 : age <= 17 ? 0.8 : 1.0;
+    p.career.addPoints((int)(choice.rankingPointsEffect * pointScale));
     if (choice.moneyEffect != 0) {
       p.finances.savings += choice.moneyEffect * 1000;
       if (p.finances.savings < 0) p.finances.savings = 0;
@@ -1231,6 +3265,44 @@ class GameEngine {
     }
     if (choice.happinessEffect != 0)
       p.happiness = constrain(p.happiness + choice.happinessEffect, 0, 100);
+    if (choice.wellbeingEffect != 0)
+      p.wellbeing = constrain(p.wellbeing + choice.wellbeingEffect, 0, 100);
+    if (choice.smartsEffect != 0)
+      p.smarts = constrain(p.smarts + choice.smartsEffect, 0, 100);
+    if (choice.looksEffect != 0)
+      p.looks = constrain(p.looks + choice.looksEffect, 0, 100);
+    if (choice.popularityEffect != 0)
+      p.socialMedia.followers = constrain(p.socialMedia.followers + choice.popularityEffect * 10000.0, 0, 500000000.0);
+
+    // Addiction risk — applied if roll succeeds
+    if (choice.addictionRisk > 0 && random(100) < choice.addictionRisk) {
+      p.mentalHealth.stressLevel = constrain(p.mentalHealth.stressLevel + 15, 0, 100);
+      p.wellbeing = constrain(p.wellbeing - 10, 0, 100);
+      p.addLifeEvent("Developing an unhealthy habit. It's affecting your performance.", state.currentYear);
+      state.popups.push("ADDICTION WARNING", "This lifestyle is taking a toll on your health.", color(255, 77, 77));
+    }
+    // Legal risk — applied if roll succeeds
+    if (choice.legalRisk > 0 && random(100) < choice.legalRisk) {
+      p.reputation.applyNegative(20);
+      p.finances.savings = constrain((int)(p.finances.savings - 50000), 0, Integer.MAX_VALUE);
+      p.addLifeEvent("Legal trouble. Lawyers, fines, and a damaged reputation.", state.currentYear);
+      state.popups.push("LEGAL TROUBLE!", "You're under investigation. This will cost you.", color(255, 122, 48));
+    }
+
+    // Permanent consequences for very high fatigue/risky choices
+    if (choice.fatigueEffect > 20) {
+      if (random(1) < 0.25) {
+        p.baseAttributes.stamina = max(30, p.baseAttributes.stamina - 1);
+        state.floatingTexts.add("Body wearing down...", width/2, height/2 + 60, false);
+      }
+    }
+    // Permanent mental benefit for composed choices
+    if (choice.mentalEffect > 10 && choice.fatigueEffect < 10) {
+      if (random(1) < 0.30) {
+        p.baseAttributes.mental = min(99, p.baseAttributes.mental + 1);
+        state.floatingTexts.add("+1 Mental (permanent)", width/2, height/2 - 40, true);
+      }
+    }
 
     if (choice.label != null && !choice.label.isEmpty())
       p.addLifeEvent("Decision: " + choice.label, state.currentYear);
@@ -1239,8 +3311,15 @@ class GameEngine {
       handleSpecialChoiceTag(choice.tag, p);
     }
 
-    state.pendingEvent = null;
-    ai.hasNewEvent     = false;
+    // OOP: Observer — notify all listeners
+    if (state.pendingEvent != null) notifyListeners(state.pendingEvent);
+
+    // Only clear pendingEvent if we're NOT in the middle of a live tournament
+    // (resolveActiveTournamentRound sets a new pendingEvent for the next round)
+    if (state.activeTournament == null) {
+      state.pendingEvent = null;
+      ai.hasNewEvent     = false;
+    }
 
     if (!state.pendingMatchAction.isEmpty()) {
       String queuedAction = state.pendingMatchAction;
@@ -1269,28 +3348,38 @@ class GameEngine {
     Player p = state.player;
     switch (action) {
       case "tournament":
-        if (!skipMatchDecision && state.lifePhase == LifePhase.PRO && random(1) < 0.40) {
-          state.pendingMatchAction = "tournament";
-          state.pendingEvent       = buildPreMatchDecisionEvent(p);
-          break;
-        }
-        if (calendar.schedule.isEmpty()) break;
-        Tournament t = calendar.schedule.get((int)random(calendar.schedule.size()));
-        TournamentRun run = t.simulate(p, matchEngine, state.currentYear);
-        MatchResult last = run.results.get(run.results.size() - 1);
-        p.career.addPoints(run.totalPoints());
-        p.career.prizeMoney  += run.totalPrize();
-        p.finances.savings   += run.totalPrize();
-        p.form.applyMatchResult(last.playerWon, true);
-        for (MatchResult r : run.results) p.career.addResult(r);
-        state.lastTournamentRun = run;
-        String res = run.won ? "Won " + t.name + "!" : "Exited " + t.name + " in " + last.round;
-        state.lastEvent = res + " +" + run.totalPoints() + "pts +" + formatMoney(run.totalPrize());
-        p.addLifeEvent(state.lastEvent, state.currentYear);
-        checkRivalTracking(run.results, p);
-        if (run.won) {
-          state.popups.push("TOURNAMENT WIN!", "You won " + t.name + "! +" + run.totalPoints() + " pts", color(255,200,55));
-          p.career.recordTitle(t.tier == TournamentTier.GRAND_SLAM, run.totalPrize());
+        if (state.lifePhase == LifePhase.PRO) {
+          // Guard: don't start a new tournament if one is already active
+          if (state.activeTournament != null) break;
+          if (calendar.schedule.isEmpty()) break;
+          // 65% chance: go round-by-round for a big tournament
+          ArrayList<Tournament> bigTourneys = new ArrayList<Tournament>();
+          for (Tournament tt : calendar.schedule) {
+            if (tt.tier == TournamentTier.GRAND_SLAM || tt.tier == TournamentTier.MASTERS_1000) bigTourneys.add(tt);
+          }
+          boolean doBig = !bigTourneys.isEmpty() && random(1) < 0.65;
+          if (doBig) {
+            startLiveTournament(p);  // round-by-round with game-time decisions
+          } else {
+            // Small tournament: instant result as before
+            Tournament t = calendar.schedule.get((int)random(calendar.schedule.size()));
+            TournamentRun run = t.simulate(p, matchEngine, state.currentYear);
+            MatchResult last = run.results.get(run.results.size() - 1);
+            p.career.addPoints(run.totalPoints());
+            p.career.prizeMoney  += run.totalPrize();
+            p.finances.savings   += run.totalPrize();
+            p.form.applyMatchResult(last.playerWon, true);
+            for (MatchResult r : run.results) p.career.addResult(r);
+            state.lastTournamentRun = run;
+            String res = run.won ? "Won " + t.name + "!" : "Exited " + t.name + " in " + last.round;
+            state.lastEvent = res + " +" + run.totalPoints() + "pts +" + formatMoney(run.totalPrize());
+            p.addLifeEvent(state.lastEvent, state.currentYear);
+            checkRivalTracking(run.results, p);
+            if (run.won) {
+              state.popups.push("TOURNAMENT WIN!", "You won " + t.name + "! +" + run.totalPoints() + " pts", color(255,200,55));
+              p.career.recordTitle(t.tier == TournamentTier.GRAND_SLAM, run.totalPrize());
+            }
+          }
         }
         break;
 
@@ -1305,7 +3394,15 @@ class GameEngine {
         p.baseAttributes.forehand = min(99, p.baseAttributes.forehand + (int)random(0, 2));
         p.baseAttributes.mental   = min(99, p.baseAttributes.mental   + (int)random(0, 2));
         p.form.confidence = constrain(p.form.confidence + 8, 0, 100);
-        String improvement = "Training camp with new coach — stats improved.";
+        String coachStat1, coachStat2;
+        switch (state.currentSport) {
+          case BASKETBALL: coachStat1 = "shooting"; coachStat2 = "dribbling"; break;
+          case SOCCER:     coachStat1 = "pace";     coachStat2 = "shooting";  break;
+          case GOLF:       coachStat1 = "driving";  coachStat2 = "iron play"; break;
+          case BOXING:     coachStat1 = "jab";      coachStat2 = "power";     break;
+          default:         coachStat1 = "serve";    coachStat2 = "forehand";  break;
+        }
+        String improvement = "Training camp with new coach — " + coachStat1 + " and " + coachStat2 + " improved.";
         state.lastEvent = improvement;
         p.addLifeEvent(improvement, state.currentYear);
         break;
@@ -1318,6 +3415,14 @@ class GameEngine {
 
   void handleTrainingAction(String action) {
     Player p = state.player;
+    String trainStat1, trainStat2;
+    switch (state.currentSport) {
+      case BASKETBALL: trainStat1 = "shooting"; trainStat2 = "dribbling"; break;
+      case SOCCER:     trainStat1 = "pace";     trainStat2 = "shooting";  break;
+      case GOLF:       trainStat1 = "driving";  trainStat2 = "iron play"; break;
+      case BOXING:     trainStat1 = "jab";      trainStat2 = "power";     break;
+      default:         trainStat1 = "serve";    trainStat2 = "forehand";  break;
+    }
     switch (action) {
       case "intensive":
         p.baseAttributes.serve    = min(99, p.baseAttributes.serve    + (int)random(1, 3));
@@ -1325,14 +3430,14 @@ class GameEngine {
         p.baseAttributes.stamina  = min(99, p.baseAttributes.stamina  + (int)random(1, 3));
         p.form.fatigue = constrain(p.form.fatigue + 22, 0, 100);
         p.wellbeing    = constrain(p.wellbeing - 8, 0, 100);
-        state.lastEvent = "Intensive training week — big gains, high fatigue.";
+        state.lastEvent = "Intense " + trainStat1 + " and " + trainStat2 + " drills — big gains, high fatigue.";
         p.addLifeEvent(state.lastEvent, state.currentYear);
         break;
 
       case "light":
         p.baseAttributes.forehand = min(99, p.baseAttributes.forehand + (int)random(0, 2));
         p.form.fatigue = constrain(p.form.fatigue + 6, 0, 100);
-        state.lastEvent = "Light practice session completed.";
+        state.lastEvent = "Light practice session — technique work.";
         break;
 
       case "mental":
@@ -1707,6 +3812,199 @@ class GameEngine {
     return e;
   }
 
+  GameEvent buildYouthLifeEvent(Player p, int age, Sport sport, LifePhase phase) {
+    GameEvent e = new GameEvent();
+    e.choices = new ArrayList<EventChoice>();
+    String sp = sport.toString().toLowerCase();
+
+    if (phase == LifePhase.CHILDHOOD || age < 10) {
+      // Age 5-9: simple joyful choices
+      int idx = (int)random(5);
+      switch(idx) {
+        case 0: {
+          e.headline    = "Birthday Invite Conflict";
+          e.description = "Two of your friends are having birthday parties on the same day. You can only go to one. Both of them are expecting you.";
+          EventChoice c1=new EventChoice(); c1.label="Go to Best Friend"; c1.description="Stay loyal. They'll understand."; c1.familyEffect=8; c1.happinessEffect=8; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Go to Popular Kid"; c2.description="Maybe make a new connection."; c2.familyEffect=-5; c2.happinessEffect=5; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Split Time"; c3.description="Rush between both parties."; c3.fatigueEffect=8; c3.familyEffect=3; e.choices.add(c3);
+          break;
+        }
+        case 1: {
+          e.headline    = "New Hobby Discovery";
+          e.description = "You discovered you love drawing after art class. But your parents want you at " + sp + " practice every day after school. You can't do both.";
+          EventChoice c1=new EventChoice(); c1.label="Focus on Sport"; c1.description="Commit fully. Art can wait."; c1.confidenceEffect=5; c1.fatigueEffect=5; c1.rankingPointsEffect=10; c1.happinessEffect=5; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Negotiate Art Day"; c2.description="Ask for one afternoon per week."; c2.mentalEffect=5; c2.familyEffect=5; c2.happinessEffect=5; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Draw in Secret"; c3.description="Sneak in art time after bedtime."; c3.mentalEffect=-3; c3.familyEffect=-3; c3.happinessEffect=3; e.choices.add(c3);
+          break;
+        }
+        case 2: {
+          e.headline    = "Family Dinner Drama";
+          e.description = "Your older sibling gets to stay up late on school nights but you don't. It's not fair — you're just as mature. Mom says rules are rules.";
+          EventChoice c1=new EventChoice(); c1.label="Accept It Quietly"; c1.description="Keep the peace. Growing up takes time."; c1.mentalEffect=3; c1.familyEffect=5; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Make Your Case Calmly"; c2.description="Explain why you deserve it."; c2.mentalEffect=5; c2.familyEffect=3; c2.happinessEffect=3; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Complain and Sulk"; c3.description="Show them how upset you are."; c3.mentalEffect=-5; c3.familyEffect=-8; c3.happinessEffect=-5; e.choices.add(c3);
+          break;
+        }
+        case 3: {
+          e.headline    = "The New Kid";
+          e.description = "A new student joined your class today. They seem shy and are sitting alone at lunch. Your usual friends are calling you over to their table.";
+          EventChoice c1=new EventChoice(); c1.label="Sit With the New Kid"; c1.description="It might be lonely over there — but it's the right thing."; c1.mentalEffect=5; c1.familyEffect=8; c1.happinessEffect=5; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Wave Them Over"; c2.description="Include everyone — best of both."; c2.mentalEffect=3; c2.familyEffect=5; c2.happinessEffect=5; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Stick With Your Group"; c3.description="You don't want to seem weird."; c3.mentalEffect=-3; c3.familyEffect=-3; e.choices.add(c3);
+          break;
+        }
+        default: {
+          e.headline    = "Test vs Practice";
+          e.description = "Big math test tomorrow and you haven't studied. " + sp + " practice ran long. You're exhausted.";
+          EventChoice c1=new EventChoice(); c1.label="Study Hard Tonight"; c1.description="Pull through. Smarts matter too."; c1.fatigueEffect=10; c1.mentalEffect=5; c1.happinessEffect=5; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Quick Study, Early Bed"; c2.description="Balanced approach. Hope for the best."; c2.fatigueEffect=5; c2.mentalEffect=3; c2.happinessEffect=3; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Skip Study, Sleep"; c3.description="Sport comes first."; c3.mentalEffect=-5; c3.happinessEffect=-3; e.choices.add(c3);
+          break;
+        }
+      }
+    }
+
+    else if (phase == LifePhase.EARLY_SCHOOL || age < 13) {
+      // Age 8-12: school/friendship/family variety
+      int pick = (int)random(8);
+      switch(pick) {
+        case 0: {
+          e.headline="Science Fair Showdown"; e.description="The science fair is next week. Your project is half-done and your " + sp + " tournament is this weekend. You need to choose how to spend your evenings.";
+          EventChoice c1=new EventChoice(); c1.label="Finish the Project"; c1.description="Pull late nights — it'll be worth it."; c1.fatigueEffect=15; c1.mentalEffect=8; c1.happinessEffect=5; c1.rankingPointsEffect=-5; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Phone It In"; c2.description="Minimum effort. Keep training."; c2.fatigueEffect=5; c2.mentalEffect=-5; c2.rankingPointsEffect=10; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Ask Parent to Help"; c3.description="Team project — family bonds strengthen."; c3.fatigueEffect=5; c3.familyEffect=10; c3.mentalEffect=3; e.choices.add(c3);
+          break;
+        }
+        case 1: {
+          e.headline="Best Friend Moving Away"; e.description="Your best friend just told you their family is moving to another city next month. You've been inseparable for years. The news hits hard.";
+          EventChoice c1=new EventChoice(); c1.label="Plan a Big Goodbye"; c1.description="Make the last month unforgettable."; c1.happinessEffect=8; c1.mentalEffect=5; c1.familyEffect=3; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Promise to Stay in Touch"; c2.description="Video calls every week. Real friends last."; c2.happinessEffect=3; c2.mentalEffect=3; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Pull Away Early"; c3.description="Distance yourself to avoid the pain."; c3.happinessEffect=-10; c3.mentalEffect=-8; c3.familyEffect=-3; e.choices.add(c3);
+          break;
+        }
+        case 2: {
+          e.headline="Coach's Favourite Problem"; e.description="The coach always picks the same three kids to start — and you're one of them. But your teammate works just as hard and never gets a chance. It's visibly hurting them.";
+          EventChoice c1=new EventChoice(); c1.label="Say Nothing — Keep Spot"; c1.description="Opportunity is earned. Focus on yourself."; c1.rankingPointsEffect=10; c1.confidenceEffect=5; c1.mentalEffect=-3; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Ask Coach to Rotate"; c2.description="Advocate for your teammate."; c2.mentalEffect=8; c2.familyEffect=5; c2.rankingPointsEffect=-5; c2.confidenceEffect=-3; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Train Together After"; c3.description="Help them improve on your own time."; c3.mentalEffect=5; c3.familyEffect=8; c3.fatigueEffect=8; e.choices.add(c3);
+          break;
+        }
+        case 3: {
+          e.headline="Grandparent Visit Weekend"; e.description="Your grandparent is visiting from far away for the first time in two years — the same weekend as your regional " + sp + " qualifier.";
+          EventChoice c1=new EventChoice(); c1.label="Skip the Qualifier"; c1.description="Family first. The qualifier can wait."; c1.familyEffect=15; c1.happinessEffect=8; c1.rankingPointsEffect=-15; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Compete Then Rush Home"; c2.description="Play fast, then spend the evening together."; c2.fatigueEffect=12; c2.familyEffect=5; c2.rankingPointsEffect=10; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Bring Grandparent to Watch"; c3.description="Make it a shared memory."; c3.familyEffect=12; c3.happinessEffect=10; c3.confidenceEffect=5; e.choices.add(c3);
+          break;
+        }
+        case 4: {
+          e.headline="Gaming Addiction Creeping In"; e.description="You got a new console and you've been playing until midnight every night for two weeks. Your grades are slipping and you're tired at practice.";
+          EventChoice c1=new EventChoice(); c1.label="Set a Strict Limit"; c1.description="2 hours max, homework first."; c1.mentalEffect=5; c1.fatigueEffect=-8; c1.happinessEffect=3; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Cold Turkey — Delete It"; c2.description="Drastic but effective."; c2.mentalEffect=8; c2.fatigueEffect=-12; c2.happinessEffect=-5; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Just One More Game"; c3.description="You'll fix it next week..."; c3.fatigueEffect=15; c3.mentalEffect=-8; c3.rankingPointsEffect=-10; e.choices.add(c3);
+          break;
+        }
+        case 5: {
+          e.headline="Grades Are Slipping"; e.description="Your report card has three Cs and a D. Your parents are upset. Practice hours are being questioned. The school counsellor wants a meeting.";
+          EventChoice c1=new EventChoice(); c1.label="Study Harder Every Night"; c1.description="Sacrifice some training time for grades."; c1.mentalEffect=10; c1.rankingPointsEffect=-10; c1.familyEffect=8; c1.fatigueEffect=10; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Get a Tutor"; c2.description="Targeted help. Costs some savings."; c2.mentalEffect=8; c2.moneyEffect=-1; c2.familyEffect=5; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Promise to Do Better"; c3.description="Buy time with words, not action."; c3.familyEffect=-5; c3.mentalEffect=-3; e.choices.add(c3);
+          break;
+        }
+        case 6: {
+          e.headline="Picked for School Play"; e.description="The drama teacher wants you in the school musical — it rehearses on Tuesday evenings, exactly when you train. It might be fun, but your coach won't be happy.";
+          EventChoice c1=new EventChoice(); c1.label="Join the Play"; c1.description="Try something new. Sport isn't everything."; c1.happinessEffect=12; c1.mentalEffect=5; c1.rankingPointsEffect=-8; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Politely Decline"; c2.description="Stay focused on your path."; c2.rankingPointsEffect=8; c2.confidenceEffect=3; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Do Both — Try to Manage"; c3.description="Double schedule. You'll figure it out."; c3.fatigueEffect=15; c3.happinessEffect=5; c3.mentalEffect=-3; e.choices.add(c3);
+          break;
+        }
+        default: {
+          e.headline="Jealous Teammate"; e.description="Your teammate has been cold to you since you got moved up to the A-team. They were your friend before. Now they barely speak to you.";
+          EventChoice c1=new EventChoice(); c1.label="Talk It Out Directly"; c1.description="Honest conversation. Address the tension."; c1.mentalEffect=8; c1.familyEffect=5; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Give Them Space"; c2.description="Time heals. Don't force it."; c2.mentalEffect=3; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Win Them Over"; c3.description="Work extra hard and drag them with you."; c3.confidenceEffect=5; c3.fatigueEffect=8; c3.familyEffect=3; e.choices.add(c3);
+          break;
+        }
+      }
+    }
+
+    else { // TEEN phase, age 13-17
+      int pick = (int)random(10);
+      switch(pick) {
+        case 0: {
+          e.headline="First Real Crush"; e.description="You've had a crush on someone in your class for months. Your friends are telling you to make a move before someone else does. They like " + sp + " too — it could be something.";
+          EventChoice c1=new EventChoice(); c1.label="Tell Them How You Feel"; c1.description="Nerve-wracking but honest."; c1.happinessEffect=15; c1.confidenceEffect=10; c1.mentalEffect=5; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Just Be Friends First"; c2.description="Get to know them. No rush."; c2.happinessEffect=5; c2.mentalEffect=8; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Do Nothing — Focus on Sport"; c3.description="Distractions aren't worth it right now."; c3.rankingPointsEffect=8; c3.happinessEffect=-5; e.choices.add(c3);
+          break;
+        }
+        case 1: {
+          e.headline="Party on Friday Night"; e.description="The popular crowd is throwing a party this Friday — the night before your biggest junior match of the year. You've been wanting to break into this social circle for months.";
+          EventChoice c1=new EventChoice(); c1.label="Go to the Party"; c1.description="Live a little. You'll be fine tomorrow."; c1.happinessEffect=10; c1.confidenceEffect=5; c1.fatigueEffect=15; c1.rankingPointsEffect=-15; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Show Up, Leave Early"; c2.description="Make an appearance. Keep it short."; c2.happinessEffect=5; c2.fatigueEffect=5; c2.rankingPointsEffect=-3; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Skip It — Rest Up"; c3.description="The match matters more right now."; c3.rankingPointsEffect=15; c3.confidenceEffect=8; c3.happinessEffect=-5; e.choices.add(c3);
+          break;
+        }
+        case 2: {
+          e.headline="Parent Doesn't Understand"; e.description="Your parent told you it's time to 'be realistic' about a sports career. They want you to focus on university applications and treat " + sp + " as a hobby. The conversation left you speechless.";
+          EventChoice c1=new EventChoice(); c1.label="Show Them With Results"; c1.description="Let your performance do the talking."; c1.confidenceEffect=15; c1.rankingPointsEffect=20; c1.mentalEffect=5; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Have an Honest Talk"; c2.description="Tell them how much this means to you."; c2.familyEffect=10; c2.mentalEffect=8; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Agree — Then Ignore Them"; c3.description="Say what they want to hear."; c3.familyEffect=-5; c3.mentalEffect=-5; e.choices.add(c3);
+          break;
+        }
+        case 3: {
+          e.headline="Academic Warning Letter"; e.description="A warning letter came home saying if your grades don't improve you'll be suspended from school sports. Your coach is furious. Your parents are worried.";
+          EventChoice c1=new EventChoice(); c1.label="Buckle Down Academically"; c1.description="Grades first. Sport follows."; c1.mentalEffect=10; c1.familyEffect=8; c1.fatigueEffect=12; c1.rankingPointsEffect=-10; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Get Private Tutoring"; c2.description="Fix it properly. Costs money."; c2.mentalEffect=12; c2.moneyEffect=-2; c2.familyEffect=5; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Deny and Hope It Blows Over"; c3.description="Maybe they won't actually enforce it."; c3.mentalEffect=-8; c3.familyEffect=-10; c3.rankingPointsEffect=-20; e.choices.add(c3);
+          break;
+        }
+        case 4: {
+          e.headline="Friend Pressures You to Skip"; e.description="Your closest friend is ditching school Friday to go to the city. They're pressuring you hard — 'you're too serious, loosen up.' If you go, you'll miss a training session.";
+          EventChoice c1=new EventChoice(); c1.label="Go With Them"; c1.description="One day won't ruin your career."; c1.happinessEffect=12; c1.mentalEffect=5; c1.rankingPointsEffect=-8; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Decline, No Drama"; c2.description="'I've got training.' No guilt."; c2.rankingPointsEffect=8; c2.confidenceEffect=5; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Try to Reschedule Both"; c3.description="See if friend can do Saturday instead."; c3.familyEffect=5; c3.happinessEffect=5; e.choices.add(c3);
+          break;
+        }
+        case 5: {
+          e.headline="Choosing What to Do With $500"; e.description="Relatives gave you $500 for your birthday. It's the most money you've ever had. Your parent says you should save it but you have other ideas.";
+          EventChoice c1=new EventChoice(); c1.label="Save It All"; c1.description="Discipline now pays off later."; c1.mentalEffect=5; c1.moneyEffect=1; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Buy Better Gear"; c2.description="Invest in your sport performance."; c2.rankingPointsEffect=10; c2.confidenceEffect=5; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Treat Yourself and Friends"; c3.description="Share the joy. Money comes back."; c3.happinessEffect=15; c3.moneyEffect=-1; c3.familyEffect=5; e.choices.add(c3);
+          break;
+        }
+        case 6: {
+          e.headline="Relationship or Sport?"; e.description="You've been dating for two months and things are getting serious. But your partner is starting to resent all the time you spend training. They want more of you.";
+          EventChoice c1=new EventChoice(); c1.label="Set Clear Boundaries"; c1.description="Explain your commitment. They must accept it."; c1.rankingPointsEffect=10; c1.confidenceEffect=8; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Reduce Training a Little"; c2.description="Balance is possible if you're smart."; c2.happinessEffect=10; c2.familyEffect=8; c2.rankingPointsEffect=-8; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="End the Relationship"; c3.description="Career first. No distractions."; c3.rankingPointsEffect=15; c3.mentalEffect=-10; c3.happinessEffect=-12; e.choices.add(c3);
+          break;
+        }
+        case 7: {
+          e.headline="Overheard in the Locker Room"; e.description="Some teammates were talking about you behind your back — saying you're only on the team because your parents donated to the club. It's not true, but people are starting to believe it.";
+          EventChoice c1=new EventChoice(); c1.label="Confront Them Directly"; c1.description="Face it head on. Silence the rumour."; c1.confidenceEffect=12; c1.mentalEffect=5; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Let Results Speak"; c2.description="Train harder than anyone. Prove them wrong."; c2.rankingPointsEffect=15; c2.fatigueEffect=12; c2.mentalEffect=8; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Tell the Coach"; c3.description="Let authority handle it."; c3.familyEffect=3; c3.mentalEffect=-3; e.choices.add(c3);
+          break;
+        }
+        case 8: {
+          e.headline="Social Media Identity Crisis"; e.description="You posted a training video that went semi-viral. Now strangers are giving unsolicited opinions about your game, your body, and your future. Some comments are brutal.";
+          EventChoice c1=new EventChoice(); c1.label="Engage With Fans"; c1.description="Build the audience. Take the good with bad."; c1.happinessEffect=5; c1.confidenceEffect=5; c1.mentalEffect=-3; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Delete Comments, Stay Private"; c2.description="Protect your mental health. No internet drama."; c2.mentalEffect=8; c2.happinessEffect=3; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Go Off on the Haters"; c3.description="Fight back publicly."; c3.mentalEffect=-10; c3.reputationEffect=-8; e.choices.add(c3);
+          break;
+        }
+        default: {
+          e.headline="Burnout Warning Signs"; e.description="You haven't had a single day off in six weeks. Everything aches. You love " + sp + " but you've started dreading practice for the first time in your life. Your body is sending signals.";
+          EventChoice c1=new EventChoice(); c1.label="Take a Full Week Off"; c1.description="Rest is not weakness. It's necessary."; c1.fatigueEffect=-20; c1.mentalEffect=12; c1.wellbeingEffect=10; c1.rankingPointsEffect=-5; e.choices.add(c1);
+          EventChoice c2=new EventChoice(); c2.label="Cut to Half-Intensity"; c2.description="Ease back. Recover gradually."; c2.fatigueEffect=-10; c2.mentalEffect=5; c2.wellbeingEffect=5; e.choices.add(c2);
+          EventChoice c3=new EventChoice(); c3.label="Push Through — No Days Off"; c3.description="Champions don't rest. Keep going."; c3.fatigueEffect=15; c3.wellbeingEffect=-15; c3.mentalEffect=-12; c3.rankingPointsEffect=10; e.choices.add(c3);
+          break;
+        }
+      }
+    }
+    return e;
+  }
+
   GameEvent buildPreMatchDecisionEvent(Player p) {
     GameEvent e = new GameEvent();
     String[] scenarios = {
@@ -1728,6 +4026,696 @@ class GameEngine {
     EventChoice c3 = new EventChoice(); c3.label = "Switch Strategy";
     c3.confidenceEffect = 10; c3.rankingPointsEffect = 25; c3.fatigueEffect = 10;
     c3.description = "Surprise your opponent. Change the rhythm."; e.choices.add(c3);
+    return e;
+  }
+
+  // ---- Step 2: Round display name helper ----
+  String roundDisplayName(RoundName r) {
+    switch (r) {
+      case F:    return "FINAL";
+      case SF:   return "SEMI-FINAL";
+      case QF:   return "QUARTER-FINAL";
+      case R16:  return "ROUND OF 16";
+      case R32:  return "ROUND OF 32";
+      case R64:  return "ROUND OF 64";
+      case R128: return "ROUND OF 128";
+      default:   return r.toString();
+    }
+  }
+
+  // ---- Step 3: Sport-specific in-match decision event ----
+  GameEvent buildInMatchDecisionEvent(Tournament t, RoundName round, OpponentProfile opp, Player p) {
+    GameEvent e  = new GameEvent();
+    String rdName = roundDisplayName(round);
+    String tName  = t.name;
+
+    String scenario;
+    String[] tennisScenIM = {
+      "You're a break down in the second set. The crowd has gone silent. " + opp.name + " looks razor-sharp.",
+      "Serving for the match at 5-4. " + opp.name + " is coming back hard. One point at a time.",
+      "Third set tiebreak. Every point feels like a final. " + opp.name + " is not going away.",
+      "You've won the first set but your shoulder is aching. " + opp.name + " is targeting your weaker side."
+    };
+    String[] bballScenIM = {
+      "Down by 3 with 90 seconds left in the " + rdName + ". " + opp.name + " has the momentum.",
+      "Tied with 2 minutes left. " + opp.name + "'s star player just fouled out — opportunity.",
+      "Up by 6 in the 4th — team wants to run the clock. You see an opening to extend the lead.",
+      "Your best player just tweaked an ankle. " + opp.name + " smells blood. How do you respond?"
+    };
+    String[] soccerScenIM = {
+      "0-0 in the 75th minute. " + opp.name + " is parking the bus. You need to break it open.",
+      "Down 1-0 in the " + rdName + ". Coach calls you over for set-piece instructions.",
+      "You won a penalty in the 88th minute. The stadium is shaking. You step up.",
+      "Extra time. Your legs are heavy. " + opp.name + " is pressing high. 15 minutes left."
+    };
+    String[] golfScenIM = {
+      "On the 16th hole, 2 shots back. The pin is tucked tight. Risk the approach or lay up?",
+      "Final round Sunday at " + tName + ". You're leading by 1. Nerves are real.",
+      "A tricky downhill putt on 18. Make it and you're in the playoff. Miss and you're done.",
+      "Hole 12: water on the right, bunker left. Your caddie says 'play safe'. You're not sure."
+    };
+    String[] boxingScenIM = {
+      "Round 6 against " + opp.name + ". You're behind on the cards. Need a KO to win.",
+      "Cut above your eye in round 4. Referee checks it. Corner tells you it's manageable.",
+      "You've wobbled " + opp.name + " in round 8. First time all fight. Do you pour it on?",
+      "You're gassing out in round 9. " + opp.name + " knows it. Dig deep or clinch?"
+    };
+    switch (t.sport) {
+      case BASKETBALL: scenario = bballScenIM[(int)random(bballScenIM.length)]; break;
+      case SOCCER:     scenario = soccerScenIM[(int)random(soccerScenIM.length)]; break;
+      case GOLF:       scenario = golfScenIM[(int)random(golfScenIM.length)]; break;
+      case BOXING:     scenario = boxingScenIM[(int)random(boxingScenIM.length)]; break;
+      default:         scenario = tennisScenIM[(int)random(tennisScenIM.length)];
+    }
+
+    e.headline    = rdName + " — " + tName;
+    e.description = scenario;
+    e.choices     = new ArrayList<EventChoice>();
+
+    // Choice 1: Aggressive
+    EventChoice ec1 = new EventChoice();
+    switch (t.sport) {
+      case BASKETBALL: ec1.label = "Attack the Paint"; break;
+      case SOCCER:     ec1.label = "Push Men Forward"; break;
+      case GOLF:       ec1.label = "Go for the Pin";   break;
+      case BOXING:     ec1.label = "Go for the KO";    break;
+      default:         ec1.label = "Attack Hard";
+    }
+    ec1.description         = "High risk, high reward. Leave it all out there.";
+    ec1.confidenceEffect    = 18;
+    ec1.fatigueEffect       = 25;
+    ec1.mentalEffect        = -5;
+    ec1.rankingPointsEffect = 60;
+    ec1.tag                 = "match_aggressive";
+    e.choices.add(ec1);
+
+    // Choice 2: Composed
+    EventChoice ec2 = new EventChoice();
+    switch (t.sport) {
+      case BASKETBALL: ec2.label = "Control the Game"; break;
+      case SOCCER:     ec2.label = "Stay Disciplined"; break;
+      case GOLF:       ec2.label = "Play the Fairway";  break;
+      case BOXING:     ec2.label = "Box Smart";         break;
+      default:         ec2.label = "Stay Composed";
+    }
+    ec2.description         = "Trust the process. Play within your game plan.";
+    ec2.confidenceEffect    = 8;
+    ec2.mentalEffect        = 8;
+    ec2.rankingPointsEffect = 30;
+    ec2.fatigueEffect       = 8;
+    ec2.tag                 = "match_composed";
+    e.choices.add(ec2);
+
+    // Choice 3: Adapt
+    EventChoice ec3 = new EventChoice();
+    switch (t.sport) {
+      case BASKETBALL: ec3.label = "Change the Tempo"; break;
+      case SOCCER:     ec3.label = "Switch Formation"; break;
+      case GOLF:       ec3.label = "Hit & Run";        break;
+      case BOXING:     ec3.label = "Counterpunch";     break;
+      default:         ec3.label = "Switch Strategy";
+    }
+    ec3.description         = "Throw something unexpected. Change the rhythm entirely.";
+    ec3.confidenceEffect    = 12;
+    ec3.rankingPointsEffect = 45;
+    ec3.fatigueEffect       = 14;
+    ec3.mentalEffect        = 4;
+    ec3.tag                 = "match_adapt";
+    e.choices.add(ec3);
+
+    return e;
+  }
+
+  // ============================================================
+  // LIVE MATCH ENGINE — set-by-set / quarter-by-quarter
+  // ============================================================
+
+  // Generate a realistic score string for a single segment
+  String generateSegmentScore(boolean playerWon, Sport sport, int segment) {
+    switch(sport) {
+      case TENNIS: {
+        if (playerWon) {
+          float r = random(1);
+          if (r < 0.35) return "6-" + (int)random(0,4);
+          if (r < 0.65) return "6-4";
+          if (r < 0.85) return "7-5";
+          return "7-6(4)";
+        } else {
+          float r = random(1);
+          if (r < 0.35) return (int)random(0,4) + "-6";
+          if (r < 0.65) return "4-6";
+          if (r < 0.85) return "5-7";
+          return "6-7(4)";
+        }
+      }
+      case BASKETBALL: {
+        int base = playerWon ? (int)random(24,36) : (int)random(18,30);
+        int opp  = playerWon ? base-(int)random(2,14) : base+(int)random(2,14);
+        return base + "-" + opp;
+      }
+      case SOCCER: {
+        if (playerWon) { int g = (int)random(1,4); return g+"-"+(int)random(0,g); }
+        else           { int g = (int)random(1,4); return (int)random(0,g)+"-"+g; }
+      }
+      case GOLF: {
+        int sc = playerWon ? -(int)random(2,8) : (int)random(0,5);
+        return (sc<0?"":"+") + sc + " (" + (segment<9?"Front 9":"Back 9") + ")";
+      }
+      case BOXING: {
+        int startRound = segment*4+1;
+        if (playerWon) return "Rds "+startRound+"-"+(startRound+3)+": Won";
+        return "Rds "+startRound+"-"+(startRound+3)+": Lost";
+      }
+      default: return playerWon ? "Won" : "Lost";
+    }
+  }
+
+  // Simulate one set/quarter/half — returns true if player won this segment
+  boolean simulateLiveSegment(float winBonus) {
+    Player p = state.player;
+    PlayerAttributes eff = p.effectiveAttributes();
+    float playerRating = (eff.serve*0.20 + eff.forehand*0.18 + eff.backhand*0.15 +
+                          eff.speed*0.15  + eff.stamina*0.12  + eff.mental*0.20);
+    // Situational modifiers
+    playerRating += map(p.form.confidence, 0, 100, -8, 8);
+    playerRating -= map(p.form.fatigue,    0, 100, 0, 14);
+    playerRating += map(p.form.momentum,   0, 100, -4, 6);
+    // Momentum swing: being ahead in sets gives confidence
+    int lead = state.livePlayerSets - state.liveOppSets;
+    playerRating += lead * 2.5;
+    // Clutch in final deciding set
+    int totalSegments = state.liveSegmentsToWin * 2 - 1;
+    boolean isDecider = (state.liveSegment == totalSegments - 1 &&
+                         state.livePlayerSets == state.liveOppSets);
+    if (isDecider) playerRating += map(p.personality.clutchFactor, 0, 100, -6, 10);
+
+    float oppRating = state.liveOpp != null ? state.liveOpp.rating : 70;
+    float diff = playerRating + winBonus * 18 - oppRating;
+    float winProb = 1.0 / (1.0 + exp(-diff / 12.0));
+    winProb = constrain(winProb + random(-0.10, 0.10), 0.05, 0.95);
+    return random(1) < winProb;
+  }
+
+  // Get the display name for a segment (e.g. "SET 1", "Q2", "1ST HALF")
+  String getSegmentName(Sport sport, int seg) {
+    switch(sport) {
+      case TENNIS:     return "SET " + (seg+1);
+      case BASKETBALL: return "Q" + (seg+1);
+      case SOCCER:     return seg==0 ? "1ST HALF" : "2ND HALF";
+      case GOLF:       return seg==0 ? "FRONT 9" : "BACK 9";
+      case BOXING:     return "ROUNDS " + (seg*4+1) + "-" + (seg*4+4);
+      default:         return "PERIOD " + (seg+1);
+    }
+  }
+
+  // Hardcoded fallback opener narrative for a segment
+  String buildSegmentOpener(Sport sport, int seg, OpponentProfile opp, RoundName round, Tournament t) {
+    String rd = roundDisplayName(round);
+    String nm = opp.name;
+    String tn = t.name;
+    switch(sport) {
+      case TENNIS: {
+        String[] tSet = {
+          "The first ball is in the air. " + nm + " looks sharp. The crowd at " + tn + " is electric.",
+          "Second set. Momentum could shift everything. " + nm + " is adjusting their game plan.",
+          "Deciding set. Everything on the line. The " + rd + " comes down to this.",
+          "Fourth set. Your legs are feeling it, but your mind is locked in.",
+          "Fifth set. History is made here. Both players have given everything."
+        };
+        return tSet[min(seg, tSet.length-1)];
+      }
+      case BASKETBALL: {
+        String[] bq = {
+          "Opening tip-off at " + tn + ". " + nm + " starts with intensity — their crowd is loud.",
+          "Second quarter. You're in a rhythm. " + nm + " makes adjustments at the timeout.",
+          "Halftime adjustments done. Third quarter is where championships are decided.",
+          "Fourth quarter. Every possession matters. " + nm + " is not going away."
+        };
+        return bq[min(seg, bq.length-1)];
+      }
+      case SOCCER: {
+        String[] sh = {
+          "Kickoff at " + tn + ". " + nm + " presses high from the first whistle.",
+          "Second half. Coach made changes at the break. Time to finish the job."
+        };
+        return sh[min(seg, sh.length-1)];
+      }
+      case GOLF: {
+        String[] gh = {
+          "Teeing off on the front nine at " + tn + ". " + nm + " is your closest rival today.",
+          "Back nine at " + tn + ". The leaderboard is tight. Every stroke matters."
+        };
+        return gh[min(seg, gh.length-1)];
+      }
+      case BOXING: {
+        String[] bx = {
+          "Opening bell. " + nm + " comes out aggressive. Stay calm and read them.",
+          "Rounds 5-8. You've learned their rhythm. Mid-fight is where this is won.",
+          "Championship rounds. The judges have it close. Leave everything in the ring."
+        };
+        return bx[min(seg, bx.length-1)];
+      }
+      default: return "The match continues. " + nm + " is dangerous. Stay focused.";
+    }
+  }
+
+  // Build the tactical decision event for the current segment
+  GameEvent buildLiveSegmentDecision(Tournament t, RoundName round, OpponentProfile opp, Player p, int seg, int pSets, int oSets) {
+    GameEvent e = new GameEvent();
+    boolean isDecider = (pSets + oSets >= (state.liveSegmentsToWin*2 - 2)) && pSets == oSets;
+    boolean trailing  = oSets > pSets;
+    boolean leading   = pSets > oSets;
+    String segName = getSegmentName(t.sport, seg);
+
+    e.headline    = segName + (isDecider ? " — DECIDING" : trailing ? " — MUST WIN" : "");
+    e.description = (state.liveNarrative == null || state.liveNarrative.isEmpty())
+                    ? buildSegmentOpener(t.sport, seg, opp, round, t) : state.liveNarrative;
+    e.choices     = new ArrayList<EventChoice>();
+
+    // Choice 1: Aggressive
+    EventChoice c1 = new EventChoice();
+    c1.fatigueEffect = 22; c1.confidenceEffect = 12; c1.rankingPointsEffect = 0;
+    c1.tag = "live_seg_aggressive";
+    switch(t.sport) {
+      case TENNIS:     c1.label = "Dictate Play";      c1.description = "Own the baseline. Force errors.";          break;
+      case BASKETBALL: c1.label = "Run & Gun";          c1.description = "Push pace, attack every possession.";     break;
+      case SOCCER:     c1.label = "Press High";         c1.description = "Win the ball in their half.";             break;
+      case GOLF:       c1.label = "Attack Pins";        c1.description = "Go flag-hunting. High risk/reward.";      break;
+      case BOXING:     c1.label = "Throw Combinations"; c1.description = "Pour it on. Look for the finish.";        break;
+      default:         c1.label = "Go Aggressive";      c1.description = "High pressure play.";
+    }
+    if (isDecider) c1.fatigueEffect = 30;
+    e.choices.add(c1);
+
+    // Choice 2: Composed
+    EventChoice c2 = new EventChoice();
+    c2.fatigueEffect = 8; c2.mentalEffect = 8; c2.confidenceEffect = 6;
+    c2.tag = "live_seg_composed";
+    switch(t.sport) {
+      case TENNIS:     c2.label = "Consistent Rally"; c2.description = "Grind them down. Error-free tennis.";   break;
+      case BASKETBALL: c2.label = "Control Tempo";    c2.description = "Play methodical. Execute the plays.";   break;
+      case SOCCER:     c2.label = "Hold Shape";        c2.description = "Compact and disciplined.";             break;
+      case GOLF:       c2.label = "Play Safe Lines";   c2.description = "Centre of greens. Avoid bogeys.";      break;
+      case BOXING:     c2.label = "Box Smart";         c2.description = "Control distance, land clean shots.";  break;
+      default:         c2.label = "Stay Composed";     c2.description = "Play within yourself.";
+    }
+    e.choices.add(c2);
+
+    // Choice 3: Adapt / react to situation
+    EventChoice c3 = new EventChoice();
+    c3.fatigueEffect = 14; c3.mentalEffect = 5; c3.confidenceEffect = 8;
+    c3.tag = "live_seg_adapt";
+    if (trailing) {
+      switch(t.sport) {
+        case TENNIS:     c3.label = "Change Tactics";    c3.description = "Serve-and-volley. Break the pattern.";    break;
+        case BASKETBALL: c3.label = "Zone Defense";      c3.description = "Force turnovers. Steal momentum.";        break;
+        case SOCCER:     c3.label = "Switch Formation";  c3.description = "Gamble with a more attacking setup.";     break;
+        case GOLF:       c3.label = "Make Moves";        c3.description = "You need birdies. Go for it.";           break;
+        case BOXING:     c3.label = "Cut Off the Ring";  c3.description = "Trap them in the corners.";              break;
+        default:         c3.label = "Change Plan";       c3.description = "Surprise them.";
+      }
+    } else if (leading) {
+      switch(t.sport) {
+        case TENNIS:     c3.label = "Protect the Lead";  c3.description = "Reduce risk. Play high-percentage.";      break;
+        case BASKETBALL: c3.label = "Milk the Clock";    c3.description = "Make them foul. Use the lead.";          break;
+        case SOCCER:     c3.label = "Sit Deep, Counter"; c3.description = "Absorb pressure and hit on the break.";  break;
+        case GOLF:       c3.label = "Fairways & Greens"; c3.description = "No heroics. Protect the lead.";          break;
+        case BOXING:     c3.label = "Survive & Jab";     c3.description = "Points win fights. Be smart.";           break;
+        default:         c3.label = "Protect Lead";      c3.description = "Don't give it away.";
+      }
+    } else {
+      switch(t.sport) {
+        case TENNIS:     c3.label = "Net Rushing";    c3.description = "Shorten points. Come forward.";            break;
+        case BASKETBALL: c3.label = "Iso Play";       c3.description = "Give your star the ball. Trust talent.";   break;
+        case SOCCER:     c3.label = "Wide Play";      c3.description = "Stretch them with width.";                 break;
+        case GOLF:       c3.label = "Creative Lines"; c3.description = "Try new angles to the pins.";              break;
+        case BOXING:     c3.label = "Body Work";      c3.description = "Break them down from the inside.";         break;
+        default:         c3.label = "Adapt";          c3.description = "Read and react.";
+      }
+    }
+    e.choices.add(c3);
+    return e;
+  }
+
+  // Enter a live match — sets up state and fires the first segment decision
+  void enterLiveMatch(Tournament t, RoundName round, OpponentProfile opp, Player p) {
+    state.inLiveMatch       = true;
+    state.livePlayerSets    = 0;
+    state.liveOppSets       = 0;
+    state.liveSegment       = 0;
+    state.liveSegmentLog    = new ArrayList<String>();
+    state.liveOpp           = opp;
+    state.liveTournament    = t;
+    state.liveRound         = round;
+    state.liveNarrative     = "";
+    state.liveWaitingForAI  = false;
+
+    // Segments to win: Grand Slams = BO5 (win 3), others = BO3 (win 2).
+    // Basketball: 4 quarters (win more), Soccer: 2 halves (win more or penalties),
+    // Golf: 2 nines (win more), Boxing: 3 groups of 4 rounds.
+    switch(t.sport) {
+      case BASKETBALL: state.liveSegmentsToWin = 2; break;
+      case SOCCER:     state.liveSegmentsToWin = 2; break;
+      case GOLF:       state.liveSegmentsToWin = 2; break;
+      case BOXING:     state.liveSegmentsToWin = 2; break;
+      default: // TENNIS
+        state.liveSegmentsToWin = (t.tier == TournamentTier.GRAND_SLAM) ? 3 : 2;
+    }
+
+    String roundName = roundDisplayName(round);
+    state.lastEvent = roundName + " — " + t.name + " vs. " + opp.name + " (#" + opp.ranking + ")";
+    // Build opener narrative as fallback; AI could replace it later
+    state.liveNarrative = buildSegmentOpener(t.sport, 0, opp, round, t);
+    state.pendingEvent  = buildLiveSegmentDecision(t, round, opp, p, 0, 0, 0);
+    // Fire AI narrative generation asynchronously — replaces description on arrival
+    state.liveWaitingForAI = true;
+    ai.generateMatchMoment(p, t, round, 0, 0, 0, opp, t.sport);
+  }
+
+  // Called when player picks a tactic — simulates the segment and continues or ends the match
+  void advanceLiveSegment(float winBonus) {
+    if (!state.inLiveMatch || state.liveTournament == null) return;
+    Player p     = state.player;
+    Tournament t = state.liveTournament;
+
+    boolean playerWonSeg = simulateLiveSegment(winBonus);
+    String segScore = generateSegmentScore(playerWonSeg, t.sport, state.liveSegment);
+    String segName  = getSegmentName(t.sport, state.liveSegment);
+    state.liveSegmentLog.add(segName + ": " + segScore + (playerWonSeg ? " ✓" : " ✗"));
+
+    if (playerWonSeg) {
+      state.livePlayerSets++;
+      p.form.confidence = constrain(p.form.confidence + 6, 0, 100);
+      p.form.momentum   = constrain(p.form.momentum   + 8, 0, 100);
+    } else {
+      state.liveOppSets++;
+      p.form.confidence = constrain(p.form.confidence - 4, 0, 100);
+      p.form.momentum   = constrain(p.form.momentum   - 5, 0, 100);
+    }
+    p.form.fatigue = constrain(p.form.fatigue + random(5, 14), 0, 100);
+    state.liveSegment++;
+
+    boolean matchWon  = state.livePlayerSets >= state.liveSegmentsToWin;
+    boolean matchLost = state.liveOppSets    >= state.liveSegmentsToWin;
+
+    // Basketball: all 4 quarters must play; winner = who won more quarters
+    if (t.sport == Sport.BASKETBALL) {
+      int totalQs = 4;
+      if (state.liveSegment >= totalQs) {
+        matchWon  = state.livePlayerSets > state.liveOppSets;
+        matchLost = !matchWon;
+      } else { matchWon = false; matchLost = false; }
+    } else if (t.sport == Sport.SOCCER) {
+      // Both halves must play; penalty shootout on draw
+      if (state.liveSegment >= 2) {
+        matchWon  = state.livePlayerSets > state.liveOppSets;
+        matchLost = state.livePlayerSets < state.liveOppSets;
+        if (!matchWon && !matchLost) {
+          // Tied — penalty shootout
+          matchWon  = random(1) < 0.55;
+          matchLost = !matchWon;
+          state.liveSegmentLog.add("PENALTIES: " + (matchWon ? "Won ✓" : "Lost ✗"));
+        }
+      } else { matchWon = false; matchLost = false; }
+    } else if (t.sport == Sport.GOLF) {
+      if (state.liveSegment >= 2) {
+        matchWon  = state.livePlayerSets >= state.liveOppSets;
+        matchLost = !matchWon;
+      } else { matchWon = false; matchLost = false; }
+    }
+
+    if (matchWon || matchLost) {
+      finishLiveMatch(matchWon, p);
+    } else {
+      // Continue to next segment
+      state.liveNarrative = buildSegmentOpener(t.sport, state.liveSegment, state.liveOpp, state.liveRound, t);
+      state.pendingEvent  = buildLiveSegmentDecision(t, state.liveRound, state.liveOpp, p,
+                              state.liveSegment, state.livePlayerSets, state.liveOppSets);
+      // Fire AI narrative for this segment — replaces description on arrival
+      state.liveWaitingForAI = true;
+      ai.generateMatchMoment(p, t, state.liveRound, state.liveSegment,
+                              state.livePlayerSets, state.liveOppSets, state.liveOpp, t.sport);
+    }
+  }
+
+  // Finalise the completed live match and advance tournament or end it
+  void finishLiveMatch(boolean playerWon, Player p) {
+    Tournament t      = state.liveTournament;
+    RoundName round   = state.liveRound;
+    OpponentProfile opp = state.liveOpp;
+
+    // Build a MatchResult from the full segment log
+    int pts   = matchEngine.getPoints(t.tier, round, playerWon);
+    float prz = matchEngine.getPrize(t.tier, round, playerWon);
+    String scoreStr = join(state.liveSegmentLog.toArray(new String[0]), "  ");
+    MatchResult result = new MatchResult(
+      playerWon ? p.name : opp.name,
+      playerWon ? opp.name : p.name,
+      scoreStr, pts, prz, playerWon, t.name, round
+    );
+
+    p.career.addResult(result);
+    p.form.applyMatchResult(playerWon, true);
+    p.form.fatigue = constrain(p.form.fatigue + random(10, 22), 0, 100);
+    // NOTE: points and prize money are NOT applied here — finishActiveTournament()
+    // totals them from activeTournamentResults to avoid double-counting.
+
+    // Add to tournament results (finishActiveTournament reads this)
+    if (state.activeTournamentResults == null) state.activeTournamentResults = new ArrayList<MatchResult>();
+    state.activeTournamentResults.add(result);
+
+    // Clear live match state
+    state.inLiveMatch       = false;
+    state.livePlayerSets    = 0;
+    state.liveOppSets       = 0;
+    state.liveSegment       = 0;
+    state.liveSegmentLog    = new ArrayList<String>();
+    state.liveNarrative     = "";
+    state.liveWaitingForAI  = false;
+    state.liveOpp           = null;
+    state.liveTournament    = null;
+    state.liveRound         = null;
+
+    // Rival tracking
+    ArrayList<MatchResult> singleResult = new ArrayList<MatchResult>();
+    singleResult.add(result);
+    checkRivalTracking(singleResult, p);
+
+    if (!playerWon) {
+      // Lost — end tournament
+      finishActiveTournament(false);
+      return;
+    }
+
+    // Won — advance to next round or finish tournament
+    boolean moreRounds = state.activeTournamentRoundIdx < state.activeTournamentRounds.length - 1;
+    if (!moreRounds) {
+      finishActiveTournament(true);
+      return;
+    }
+    state.activeTournamentRoundIdx++;
+    RoundName nextRound = state.activeTournamentRounds[state.activeTournamentRoundIdx];
+    SportConfig cfg = getSportConfig(t.sport);
+    int nextOppRank = t.generateOpponentRank(nextRound);
+    OpponentProfile nextOpp = t.generateOpponent(nextOppRank, cfg);
+    state._pendingMatchOpp = nextOpp;
+    String shortScore = scoreStr.length() > 40 ? scoreStr.substring(0, 40) + "..." : scoreStr;
+    state.lastEvent = "WON " + roundDisplayName(round) + "! " + shortScore + " → " + roundDisplayName(nextRound);
+    // Enter next round as a new live match
+    enterLiveMatch(t, nextRound, nextOpp, p);
+  }
+
+  // ---- Step 4: Start a live (round-by-round) tournament ----
+  void startLiveTournament(Player p) {
+    if (calendar.schedule.isEmpty()) return;
+    ArrayList<Tournament> big = new ArrayList<Tournament>();
+    for (Tournament tt : calendar.schedule) {
+      if (tt.tier == TournamentTier.GRAND_SLAM || tt.tier == TournamentTier.MASTERS_1000) big.add(tt);
+    }
+    Tournament chosen = big.isEmpty()
+      ? calendar.schedule.get((int)random(calendar.schedule.size()))
+      : big.get((int)random(big.size()));
+
+    state.activeTournament         = chosen;
+    state.activeTournamentRoundIdx = 0;
+    state.activeTournamentRounds   = chosen.getRounds();
+    state.activeTournamentResults  = new ArrayList<MatchResult>();
+    state.pendingWinProbBonus      = 0;
+
+    SportConfig cfg      = getSportConfig(chosen.sport);
+    RoundName firstRound = state.activeTournamentRounds[0];
+    int oppRank          = chosen.generateOpponentRank(firstRound);
+    OpponentProfile opp  = chosen.generateOpponent(oppRank, cfg);
+    state._pendingMatchOpp = opp;
+    // Enter live set-by-set match instead of whole-match decision
+    enterLiveMatch(chosen, firstRound, opp, p);
+  }
+
+  // ---- Step 5a: Resolve the current tournament round after a game-time decision ----
+  void resolveActiveTournamentRound(float winBonus) {
+    if (state.inLiveMatch) { advanceLiveSegment(winBonus); return; }
+    if (state.activeTournament == null) return;
+    Player p          = state.player;
+    Tournament t      = state.activeTournament;
+    RoundName round   = state.activeTournamentRounds[state.activeTournamentRoundIdx];
+    SportConfig cfg   = getSportConfig(t.sport);
+
+    OpponentProfile opp = state._pendingMatchOpp;
+    if (opp == null) {
+      int oppRank = t.generateOpponentRank(round);
+      opp = t.generateOpponent(oppRank, cfg);
+    }
+
+    // Temporarily boost confidence by the decision bonus, then restore
+    float origConf    = p.form.confidence;
+    p.form.confidence = constrain(p.form.confidence + winBonus * 40, 0, 100);
+
+    MatchResult result    = matchEngine.simulate(p, opp, t.surface, t.tier, round, state.currentYear, t.sport);
+    result.tournamentName = t.name;
+
+    p.form.confidence = origConf;  // restore
+
+    state.activeTournamentResults.add(result);
+    p.career.addResult(result);
+    p.form.applyMatchResult(result.playerWon, false);
+
+    boolean morRounds      = state.activeTournamentRoundIdx < state.activeTournamentRounds.length - 1;
+    state._pendingMatchOpp = null;
+
+    if (!result.playerWon || !morRounds) {
+      finishActiveTournament(result.playerWon && round == RoundName.F);
+    } else {
+      // Advance to next round
+      state.activeTournamentRoundIdx++;
+      RoundName nextRound     = state.activeTournamentRounds[state.activeTournamentRoundIdx];
+      int nextOppRank         = t.generateOpponentRank(nextRound);
+      OpponentProfile nextOpp = t.generateOpponent(nextOppRank, cfg);
+      state._pendingMatchOpp  = nextOpp;
+      state.lastEvent         = "WON " + roundDisplayName(round) + "! " + result.score
+                              + " — Now: " + roundDisplayName(nextRound) + " vs. " + nextOpp.name;
+      state.pendingEvent      = buildInMatchDecisionEvent(t, nextRound, nextOpp, p);
+    }
+  }
+
+  // ---- Step 5b: Finish an active tournament and record results ----
+  void finishActiveTournament(boolean won) {
+    Player p          = state.player;
+    Tournament t      = state.activeTournament;
+    TournamentRun run = new TournamentRun(t);
+    for (MatchResult r : state.activeTournamentResults) run.addResult(r);
+    if (!run.results.isEmpty()) {
+      run.finalRound = run.results.get(run.results.size() - 1).round;
+      run.won        = won;
+    }
+    p.career.addPoints(run.totalPoints());
+    p.career.prizeMoney += run.totalPrize();
+    p.finances.savings  += run.totalPrize();
+    state.lastTournamentRun = run;
+    checkRivalTracking(run.results, p);
+    MatchResult last = run.results.isEmpty() ? null : run.results.get(run.results.size() - 1);
+    String resultStr = won
+      ? "WON " + t.name + "! Champion! +" + run.totalPoints() + "pts +" + formatMoney(run.totalPrize())
+      : (last != null ? "Eliminated at " + roundDisplayName(last.round) + " — " + t.name : "Tournament ended");
+    state.lastEvent = resultStr;
+    p.addLifeEvent(resultStr, state.currentYear);
+    if (won) {
+      state.popups.push("TOURNAMENT WIN!", "Champion at " + t.name + "! +" + run.totalPoints() + " pts", color(255,200,55));
+      p.career.recordTitle(t.tier == TournamentTier.GRAND_SLAM, run.totalPrize());
+    }
+    // Clear tournament state
+    state.activeTournament         = null;
+    state.activeTournamentRoundIdx = 0;
+    state.activeTournamentRounds   = null;
+    state.activeTournamentResults  = new ArrayList<MatchResult>();
+  }
+
+  GameEvent buildYouthBigGameEvent(Player p, int age, Sport sport) {
+    GameEvent e = new GameEvent();
+    String[] tennisScen = {
+      "Regional junior final. You're facing the top seed. One set all. Your arm is tired.",
+      "You're serving at 5-4 in the deciding set at the " + p.career.ageGroup + " nationals. First match point.",
+      "The #1 junior in your division. You've beaten them once before. Today feels different."
+    };
+    String[] bballScen = {
+      "State championship quarterfinal. Down 4 with 3 minutes left. Coach calls timeout.",
+      "Your school's first playoff game in a decade. You're hot but your teammate is open.",
+      "Last possession, tied game. Coach draws up the play. They're going to you."
+    };
+    String[] soccerScen = {
+      "School cup final. 0-0 in extra time. You've just won a free kick 25 yards out.",
+      "Regional qualifier. Down one goal, 10 minutes left. Coach pushes you forward.",
+      "Scouts in the stands. Big match. You've trained 3 years for this moment."
+    };
+    String[] golfScen = {
+      "Junior state championship. You're tied going into the 18th hole.",
+      "Final round of the AJGA qualifier. One bogey could cost you your card.",
+      "You're leading by two with three holes left. The wind has picked up."
+    };
+    String[] boxingScen = {
+      "Amateur title fight. You're behind on points going into the final round.",
+      "Golden Gloves qualifier. Your opponent is older, stronger -- but you're faster.",
+      "Your corner says you need a knockout. You've got two rounds left."
+    };
+    String[] scenes;
+    switch (sport) {
+      case BASKETBALL: scenes = bballScen;  break;
+      case SOCCER:     scenes = soccerScen; break;
+      case GOLF:       scenes = golfScen;   break;
+      case BOXING:     scenes = boxingScen; break;
+      default:         scenes = tennisScen;
+    }
+    e.headline    = "BIG GAME -- Age " + age;
+    e.description = scenes[(int)random(scenes.length)] + " This could change everything.";
+    e.choices     = new ArrayList<EventChoice>();
+
+    EventChoice yc1 = new EventChoice();
+    switch (sport) {
+      case BASKETBALL: yc1.label = "Take the Shot";   break;
+      case SOCCER:     yc1.label = "Strike for Goal"; break;
+      case GOLF:       yc1.label = "Attack the Pin";  break;
+      case BOXING:     yc1.label = "Let Hands Go";    break;
+      default:         yc1.label = "Go For It";
+    }
+    yc1.description         = "This is your moment. Leave nothing in the tank.";
+    yc1.confidenceEffect    = 25;
+    yc1.fatigueEffect       = 30;
+    yc1.rankingPointsEffect = 120;
+    yc1.mentalEffect        = 10;
+    yc1.tag                 = "youth_clutch";
+    e.choices.add(yc1);
+
+    EventChoice yc2 = new EventChoice();
+    switch (sport) {
+      case BASKETBALL: yc2.label = "Feed the Open Man";  break;
+      case SOCCER:     yc2.label = "Play It Simple";     break;
+      case GOLF:       yc2.label = "Lay Up, Win Hole";   break;
+      case BOXING:     yc2.label = "Clinch and Survive"; break;
+      default:         yc2.label = "Trust the Process";
+    }
+    yc2.description         = "Smart is better than brave sometimes.";
+    yc2.confidenceEffect    = 10;
+    yc2.mentalEffect        = 12;
+    yc2.rankingPointsEffect = 60;
+    yc2.fatigueEffect       = 10;
+    yc2.tag                 = "youth_smart";
+    e.choices.add(yc2);
+
+    EventChoice yc3 = new EventChoice();
+    switch (sport) {
+      case BASKETBALL: yc3.label = "Dig Deeper";           break;
+      case SOCCER:     yc3.label = "Fight for Every Ball"; break;
+      case GOLF:       yc3.label = "Grind It Out";         break;
+      case BOXING:     yc3.label = "Heart Over Head";      break;
+      default:         yc3.label = "Mental Strength";
+    }
+    yc3.description         = "Pure will. No shortcuts. Just you vs. the moment.";
+    yc3.confidenceEffect    = 15;
+    yc3.mentalEffect        = 18;
+    yc3.rankingPointsEffect = 80;
+    yc3.fatigueEffect       = 22;
+    yc3.wellbeingEffect     = -8;
+    yc3.tag                 = "youth_grind";
+    e.choices.add(yc3);
     return e;
   }
 
@@ -1774,12 +4762,63 @@ class GameEngine {
           p.addLifeEvent("Engaged to " + p.family.partnerName() + "! The ring is on the finger.", state.currentYear);
         }
         break;
+      case "youth_clutch":
+        if (random(1) < 0.55 + state.player.form.confidence * 0.002) {
+          p.career.titlesWon++;
+          p.baseAttributes.mental = min(99, p.baseAttributes.mental + 3);
+          p.addLifeEvent("Clutched the big game at age " + p.age(state.currentYear) + ". First taste of glory.", state.currentYear);
+          state.popups.push("BIG WIN!", "You came through when it mattered most!", color(255, 200, 55));
+        } else {
+          p.happiness = constrain(p.happiness - 8, 0, 100);
+          p.addLifeEvent("Swung for the fences in the big game -- fell short. A hard lesson.", state.currentYear);
+        }
+        break;
+      case "youth_smart":
+        p.smarts = min(99, (int)(p.smarts + 3));
+        p.addLifeEvent("Played smart in the big game at age " + p.age(state.currentYear) + ". Growing every match.", state.currentYear);
+        if (random(1) < 0.65) {
+          p.career.titlesWon++;
+          state.popups.push("SMART PLAY!", "Your composure won the day.", color(74, 158, 255));
+        }
+        break;
+      case "youth_grind":
+        p.baseAttributes.stamina = min(99, p.baseAttributes.stamina + 2);
+        p.baseAttributes.mental  = min(99, p.baseAttributes.mental  + 2);
+        p.addLifeEvent("Grinded through the big game on pure heart at age " + p.age(state.currentYear) + ".", state.currentYear);
+        if (random(1) < 0.60) {
+          p.career.titlesWon++;
+          state.popups.push("GRIT WINS!", "You refused to lose.", color(46, 204, 138));
+        }
+        break;
       case "have_child":
         String[] babyNames = {"Luca","Sofia","Noah","Mia","Mateo","Elena","Lucas","Aria",
                                "Gabriel","Isla","Marco","Zara","Diego","Luna","Oliver","Maya"};
         String babyName = babyNames[(int)random(babyNames.length)];
         p.family.children.add(new Child(babyName, 0));
         p.addLifeEvent("Welcomed " + babyName + " into the world! A new chapter begins.", state.currentYear);
+        break;
+      // ---- Live segment decision tags (set-by-set / quarter-by-quarter) ----
+      case "live_seg_aggressive":
+        advanceLiveSegment(0.20); break;
+      case "live_seg_composed":
+        advanceLiveSegment(0.08); break;
+      case "live_seg_adapt":
+        advanceLiveSegment(0.14); break;
+      // ---- Step 6: Game-time tournament decision tags (backward compat) ----
+      case "match_aggressive":
+        state.pendingWinProbBonus = 0.18;
+        if (state.inLiveMatch) advanceLiveSegment(0.18);
+        else resolveActiveTournamentRound(0.18);
+        break;
+      case "match_composed":
+        state.pendingWinProbBonus = 0.08;
+        if (state.inLiveMatch) advanceLiveSegment(0.08);
+        else resolveActiveTournamentRound(0.08);
+        break;
+      case "match_adapt":
+        state.pendingWinProbBonus = 0.13;
+        if (state.inLiveMatch) advanceLiveSegment(0.13);
+        else resolveActiveTournamentRound(0.13);
         break;
     }
   }
@@ -1990,7 +5029,7 @@ class GameEngine {
         p.baseAttributes.serve    = min(80, p.baseAttributes.serve    + (int)random(1, 3));
         p.baseAttributes.forehand = min(80, p.baseAttributes.forehand + (int)random(0, 2));
         p.form.fatigue = constrain(p.form.fatigue + 12, 0, 100);
-        state.lastEvent = "Youth training session — skill developing fast.";
+        state.lastEvent = "Youth " + state.currentSport.toString().toLowerCase() + " training — skill developing fast.";
         break;
       case "watch_pro":
         p.baseAttributes.mental  = min(90, p.baseAttributes.mental  + (int)random(1, 3));
@@ -2033,7 +5072,7 @@ class GameEngine {
           p.baseAttributes.serve  = min(90, p.baseAttributes.serve  + (int)random(2, 5));
           p.baseAttributes.mental = min(90, p.baseAttributes.mental + 3);
           p.form.confidence       = constrain(p.form.confidence + 10, 0, 100);
-          state.lastEvent = "Hired first real coach — stats jumped immediately. -$1K";
+          state.lastEvent = "Hired first real coach for " + state.currentSport.toString().toLowerCase() + " — stats jumped immediately. -$1K";
           p.addLifeEvent(state.lastEvent, state.currentYear);
         } else {
           state.lastEvent = "Need at least $1K to hire a coach.";
@@ -2084,11 +5123,14 @@ class GameEngine {
   }
 
   void processKey(char k, int kc) {
+    if (k == 'h' || k == 'H') { helpOverlay.toggle(); return; }
     if (k == ' ' && currentScreen == ScreenID.CAREER) ageUp();
     activeScreen.onKey(k, kc);
   }
 
   void processMouse(int mx, int my) {
+    if (helpOverlay != null && helpOverlay.visible) { helpOverlay.visible = false; return; }
+    if (toastManager != null && toastManager.handleClick(mx, my)) return;
     if (state != null && state.popups != null && state.popups.handleClick(mx, my)) return;
     if (state != null && state.tutorial != null && state.tutorial.handleClick(mx, my, width, height)) return;
     if (state.player != null && my < 52) {
@@ -2115,7 +5157,8 @@ class GameEngine {
     state.player.hometown = hometown;
     state.currentYear  = birthYear;
     state.lifePhase    = LifePhase.CHILDHOOD;
-    state.player.career.worldRanking  = (int)random(200, 400);
+    state.player.career.worldRanking  = 9999; // unranked at birth
+    state.player.career.juniorRanking = 9999; // unranked at birth
     state.player.career.rankingPoints = 0;
     state.player.finances.savings     = 0;
 
@@ -2131,7 +5174,7 @@ class GameEngine {
     switchTo(ScreenID.CAREER);
   }
 
-  // ── Rival system ──────────────────────────────────────────
+  // Rival system
   void initRivals() {
     state.rivals = new ArrayList<Rival>();
     int[] indices = {2, 5, 9};
@@ -2182,90 +5225,1936 @@ class GameEngine {
     c3.description = "Rise above it. Focus on your game."; e.choices.add(c3);
     return e;
   }
+
+  GameEvent buildStudyMomentEvent(Player p) {
+    GameEvent e = new GameEvent();
+    String[] scenarios = {
+      "A professor offers you a research assistant position — paid, prestigious, but 15 hours a week on top of training.",
+      "Finals are in two weeks. Your teammates are going to a training camp the same week. You have to choose.",
+      "You failed a midterm. If you don't pass the makeup, you lose your academic scholarship.",
+      "A classmate wants to study together — they seem to have a crush on you. Could be complicated."
+    };
+    e.headline    = "Academic Crossroads";
+    e.description = scenarios[(int)random(scenarios.length)];
+    e.choices     = new ArrayList<EventChoice>();
+    EventChoice c1 = new EventChoice(); c1.label = "Prioritise Studies";
+    c1.description = "Grind the academics. Career can absorb a small dip.";
+    c1.mentalEffect = 10; c1.fatigueEffect = 12; c1.rankingPointsEffect = -10; c1.happinessEffect = 5; e.choices.add(c1);
+    EventChoice c2 = new EventChoice(); c2.label = "Balance Both";
+    c2.description = "Careful scheduling. Neither suffers too much.";
+    c2.mentalEffect = 5; c2.fatigueEffect = 8; c2.rankingPointsEffect = 5; e.choices.add(c2);
+    EventChoice c3 = new EventChoice(); c3.label = "Sport Comes First";
+    c3.description = "Your future is on the court, not in the classroom.";
+    c3.rankingPointsEffect = 15; c3.confidenceEffect = 5; c3.mentalEffect = -5; e.choices.add(c3);
+    return e;
+  }
+
+  GameEvent buildFriendshipEvent(Player p) {
+    GameEvent e = new GameEvent();
+    String[] scenarios = {
+      "Your oldest friend from childhood just called. They're going through a rough time and need you to visit — but it means missing a week of training.",
+      "A fellow athlete wants to start a business together. They've got energy, you've got the name. Could be big or a total distraction.",
+      "You and your closest friend had a massive argument over something stupid. Now it's awkward on the team bus.",
+      "An old rival reached out wanting to bury the hatchet. They seem genuine. Or do they want something?"
+    };
+    e.headline    = "Friendship at a Crossroads";
+    e.description = scenarios[(int)random(scenarios.length)];
+    e.choices     = new ArrayList<EventChoice>();
+    EventChoice c1 = new EventChoice(); c1.label = "Show Up For Them";
+    c1.description = "Real friendship costs something. Be there.";
+    c1.familyEffect = 15; c1.happinessEffect = 10; c1.rankingPointsEffect = -8; e.choices.add(c1);
+    EventChoice c2 = new EventChoice(); c2.label = "Compromise Solution";
+    c2.description = "Find a middle path that doesn't wreck either.";
+    c2.familyEffect = 7; c2.mentalEffect = 5; e.choices.add(c2);
+    EventChoice c3 = new EventChoice(); c3.label = "Put Career First";
+    c3.description = "They'll understand. Or they won't. Career waits for no one.";
+    c3.rankingPointsEffect = 10; c3.familyEffect = -8; c3.mentalEffect = -3; e.choices.add(c3);
+    return e;
+  }
+
+  GameEvent buildMentalHealthEvent(Player p) {
+    GameEvent e = new GameEvent();
+    String[] scenarios = {
+      "You haven't slept properly in two weeks. Your coach has noticed. A sports psychologist wants to schedule sessions.",
+      "You've been feeling numb lately — wins don't excite you, losses don't hurt. Something's off.",
+      "An anxiety attack hit during warmup before a big match. You managed to hide it. Barely.",
+      "A teammate opened up about seeing a therapist. It made you realise you might need help too."
+    };
+    e.headline    = "Mind Over Matter";
+    e.description = scenarios[(int)random(scenarios.length)];
+    e.choices     = new ArrayList<EventChoice>();
+    EventChoice c1 = new EventChoice(); c1.label = "Get Professional Help";
+    c1.description = "Book the sessions. Mental health is performance.";
+    c1.mentalEffect = 15; c1.wellbeingEffect = 10; c1.moneyEffect = -3; c1.happinessEffect = 8; e.choices.add(c1);
+    EventChoice c2 = new EventChoice(); c2.label = "Talk to Trusted Friend";
+    c2.description = "Informal support. Sometimes that's enough.";
+    c2.mentalEffect = 8; c2.familyEffect = 5; c2.happinessEffect = 5; e.choices.add(c2);
+    EventChoice c3 = new EventChoice(); c3.label = "Push Through Alone";
+    c3.description = "You've always handled things yourself. It'll pass.";
+    c3.mentalEffect = -10; c3.wellbeingEffect = -8; c3.rankingPointsEffect = 5; e.choices.add(c3);
+    return e;
+  }
+
+  GameEvent buildLifestyleChoiceEvent(Player p) {
+    GameEvent e = new GameEvent();
+    String[] scenarios = {
+      "Your entourage is growing. Friends of friends now expect free tickets, hotel rooms, and introductions. It's starting to cost you real money and energy.",
+      "A luxury watch brand wants to gift you a $40K timepiece. In exchange, one social post. Seems harmless.",
+      "You've been eating badly on the road — fast food, irregular hours. Your physio says your body composition has shifted.",
+      "A celebrity friend invites you to their private villa for two weeks during the off-season. All expenses paid — but two weeks of no training."
+    };
+    e.headline    = "The Lifestyle Question";
+    e.description = scenarios[(int)random(scenarios.length)];
+    e.choices     = new ArrayList<EventChoice>();
+    EventChoice c1 = new EventChoice(); c1.label = "Live the High Life";
+    c1.description = "You earned it. Enjoy the perks.";
+    c1.happinessEffect = 15; c1.wellbeingEffect = -5; c1.moneyEffect = -10; c1.rankingPointsEffect = -8; e.choices.add(c1);
+    EventChoice c2 = new EventChoice(); c2.label = "Selective and Smart";
+    c2.description = "Accept some perks, keep your discipline.";
+    c2.happinessEffect = 8; c2.moneyEffect = -3; c2.rankingPointsEffect = 3; e.choices.add(c2);
+    EventChoice c3 = new EventChoice(); c3.label = "Keep It Athlete-Focused";
+    c3.description = "No distractions. Regime is everything.";
+    c3.rankingPointsEffect = 12; c3.wellbeingEffect = 8; c3.confidenceEffect = 5; c3.happinessEffect = -5; e.choices.add(c3);
+    return e;
+  }
+
+  GameEvent buildCharityAndImageEvent(Player p) {
+    GameEvent e = new GameEvent();
+    String[] scenarios = {
+      "A non-profit wants you as ambassador for youth sport in underserved communities. Big time commitment — 3 weeks a year.",
+      "You're asked to speak at your old school about pursuing dreams. It'll be streamed live. Terrifying and powerful.",
+      "A documentary crew wants to follow you for a month to film a 'day in the life'. Total access. No filter.",
+      "Your city is raising money for flood relief and your manager suggests a charity match to headline the event."
+    };
+    e.headline    = "Beyond the Game";
+    e.description = scenarios[(int)random(scenarios.length)];
+    e.choices     = new ArrayList<EventChoice>();
+    EventChoice c1 = new EventChoice(); c1.label = "Commit Fully";
+    c1.description = "Give back. Legacy is built outside arenas too.";
+    c1.reputationEffect = 15; c1.happinessEffect = 12; c1.familyEffect = 8; c1.rankingPointsEffect = -5; e.choices.add(c1);
+    EventChoice c2 = new EventChoice(); c2.label = "Do It on Your Terms";
+    c2.description = "Negotiate the scope. Contribute without burning out.";
+    c2.reputationEffect = 8; c2.happinessEffect = 6; e.choices.add(c2);
+    EventChoice c3 = new EventChoice(); c3.label = "Politely Decline";
+    c3.description = "Not the right time. Focus on the season.";
+    c3.rankingPointsEffect = 8; c3.reputationEffect = -3; e.choices.add(c3);
+    return e;
+  }
 }
 
-// Game State
-class GameState {
-  Player    player;
-  int       currentYear = 2018;
-  int       currentWeek = 1;
-  GameEvent pendingEvent        = null;
-  TournamentRun lastTournamentRun = null;
-  String    lastEvent           = "";
-  boolean   retirementEligible  = false;
-  ArrayList<String> decisionLog = new ArrayList<String>();
-  Sport       currentSport  = Sport.TENNIS;
-  SportConfig sportConfig   = null;
-  LifePhase   lifePhase     = LifePhase.CHILDHOOD;
-  boolean     inUniversity  = false;
-  String      pendingMatchAction   = "";
-  int         proCareerStartYear   = -1;
-  ArrayList<Rival> rivals          = new ArrayList<Rival>();
-  TutorialSystem tutorial = new TutorialSystem();
-  PopupManager popups = new PopupManager();
-  FloatingTextManager floatingTexts = new FloatingTextManager();
+
+// ============================================================
+// Domain.pde
+// ============================================================
+
+/**
+ * Domain — All player domain classes and subsystems.
+ * OOP role: Encapsulation (private fields with methods), Composition (Player composed of subsystems),
+ *           Implements Simulatable, Persistable interfaces
+ * Collaborators: GameEngine, LifeScreen, TrainingScreen
+ */
+
+// ============================================================
+// PLAYER DOMAIN — core player and sub-classes
+// ============================================================
+
+// OOP: Composition — Player is composed of many sub-systems, each handling its own domain
+// OOP: would implement Persistable for save/load in future
+class Player {
+  String name;
+  String nationality;
+  int    birthYear;
+  PlayStyle playStyle;
+  String dominantHand;
+
+  PlayerAttributes  baseAttributes;
+  PlayerForm        form;
+  PlayerHealth      health;
+  PlayerCareer      career;
+  PlayerPersonality personality;
+  PlayerProgression progression;
+  Family            family;
+  PlayerFinances    finances;
+  Coach[]           coaches;
+  Reputation        reputation;
+  AcademicRecord    academic;
+
+  // Life-sim systems
+  MentalHealthSystem mentalHealth;
+  SocialMediaProfile socialMedia;
+  AgentContract      agent;
+  AddictionLevel     addiction           = AddictionLevel.NONE;
+  int                addictionWeeks      = 0;
+  LegalStatus        legalStatus         = LegalStatus.CLEAN;
+  String             activeLegalCase     = "";
+  int                legalWeeksRemaining = 0;
+  float              legalFineAmount     = 0;
+  ArrayList<Award>   awards;
+  ArrayList<String>  lifeEvents;
+  float              popularity          = 10;
+  int                weeksInRelationship = 0;
+  boolean            hasSocialManager    = false;
+  String             hometown            = "";
+  Parents            parents;
+  NutritionSystem    nutrition;
+  CoachingStaff      coachingStaff;
+
+  // BitLife-style core life stats (0-100)
+  float wellbeing  = 90;
+  float happiness  = 75;
+  float smarts     = 50;
+  float looks      = 50;
+
+  Player(String name, String nationality, int birthYear,
+         PlayStyle style, String hand) {
+    this.name         = name;
+    this.nationality  = nationality;
+    this.birthYear    = birthYear;
+    this.playStyle    = style;
+    this.dominantHand = hand;
+
+    baseAttributes = new PlayerAttributes(60, 58, 55, 45, 65, 70, 55);
+    form           = new PlayerForm();
+    health         = new PlayerHealth();
+    career         = new PlayerCareer();
+    personality    = new PlayerPersonality();
+    progression    = new PlayerProgression(this);
+    family         = new Family();
+    finances       = new PlayerFinances();
+    academic       = new AcademicRecord();
+    coaches        = new Coach[0];
+    reputation     = new Reputation();
+    mentalHealth   = new MentalHealthSystem();
+    socialMedia    = new SocialMediaProfile();
+    agent          = new AgentContract(AgentTier.NO_AGENT);
+    awards         = new ArrayList<Award>();
+    lifeEvents     = new ArrayList<String>();
+    parents        = new Parents();
+    nutrition      = new NutritionSystem();
+    coachingStaff  = new CoachingStaff();
+
+    wellbeing = constrain(75 + random(-10, 20), 0, 100);
+    happiness = constrain(65 + random(-10, 25), 0, 100);
+    smarts    = constrain(random(30, 90),        0, 100);
+    looks     = constrain(random(30, 90),        0, 100);
+  }
+
+  int age(int currentYear) { return currentYear - birthYear; }
+
+  PlayerAttributes effectiveAttributes() {
+    float formMult   = map(form.confidence, 0, 100, 0.85, 1.15);
+    float fatMult    = map(form.fatigue,    0, 100, 1.05, 0.80);
+    float mentalMult = mentalHealth.performanceModifier();
+    float addMult    = addictionPenalty();
+    float mult       = formMult * fatMult * mentalMult * addMult;
+    return new PlayerAttributes(
+      (int)(baseAttributes.serve    * mult),
+      (int)(baseAttributes.forehand * mult),
+      (int)(baseAttributes.backhand * mult),
+      (int)(baseAttributes.volley   * mult),
+      (int)(baseAttributes.speed    * mult),
+      (int)(baseAttributes.stamina  * mult),
+      (int)(baseAttributes.mental   * mult * map(form.confidence, 0, 100, 0.9, 1.1))
+    );
+  }
+
+  float addictionPenalty() {
+    switch (addiction) {
+      case MILD:     return 0.96;
+      case MODERATE: return 0.88;
+      case SEVERE:   return 0.75;
+      default:       return 1.0;
+    }
+  }
+
+  CareerPhase currentPhase(int currentYear) {
+    int a = age(currentYear);
+    if (a < 18) return CareerPhase.JUNIOR;
+    if (a < 22) return CareerPhase.RISING;
+    if (a < 28) return CareerPhase.PRIME;
+    if (a < 32) return CareerPhase.VETERAN;
+    return CareerPhase.DECLINING;
+  }
+
+  void addLifeEvent(String entry, int year) {
+    lifeEvents.add(0, "[" + year + "] " + entry);
+    if (lifeEvents.size() > 60) lifeEvents.remove(lifeEvents.size() - 1);
+  }
+
+  String toPromptString(int currentYear, int week, Sport sport) {
+    PlayerAttributes eff = effectiveAttributes();
+    SportConfig cfg = getSportConfig(sport);
+    String[] sn = cfg.statNames;
+    int[] statVals = { eff.serve, eff.forehand, eff.backhand, eff.volley, eff.speed, eff.stamina, eff.mental };
+    StringBuilder statStr = new StringBuilder();
+    for (int i = 0; i < sn.length; i++) {
+      statStr.append(" | ").append(sn[i]).append(": ").append(statVals[i]);
+    }
+    return "Player: " + name +
+      " | Age: "              + age(currentYear) +
+      " | Nation: "           + nationality +
+      " | Style: "            + cfg.roleFull[min(playStyle.ordinal(), cfg.roleFull.length - 1)] +
+      " | Ranking: #"         + career.worldRanking +
+      " | Phase: "            + currentPhase(currentYear) +
+      statStr.toString() +
+      " | Fatigue: "          + (int)form.fatigue    + "/100" +
+      " | Confidence: "       + (int)form.confidence + "/100" +
+      " | MentalState: "      + mentalHealth.stateLabel() +
+      " | Injury: "           + health.status +
+      " | " + cfg.majorLabel + ": " + career.grandSlamTitles +
+      " | Titles: "           + career.titlesWon +
+      " | Week: "             + week +
+      " | Savings: $"         + (int)finances.savings +
+      " | NetWorth: $"        + (int)finances.netWorth() +
+      " | Lifestyle: "        + finances.lifestyleLabel() +
+      " | Agent: "            + agent.tierLabel() +
+      " | Followers: "        + socialMedia.followersLabel() +
+      " | Addiction: "        + addiction +
+      " | LegalStatus: "      + legalStatus +
+      " | RelStatus: "        + family.statusDisplay() +
+      " | Kids: "             + family.children.size() +
+      " | Hometown: "          + hometown +
+      " | Mom: "              + (parents != null ? parents.mom.name + "(" + (int)parents.mom.relationship + ")" : "N/A") +
+      " | Dad: "              + (parents != null ? parents.dad.name + "(" + (int)parents.dad.relationship + ")" : "N/A") +
+      " | FamilyHappiness: "  + (int)family.familyHappiness + "/100" +
+      " | Wellbeing: "        + (int)wellbeing + "/100" +
+      " | Happiness: "        + (int)happiness + "/100" +
+      " | Smarts: "           + (int)smarts    + "/100" +
+      " | Looks: "            + (int)looks     + "/100";
+  }
 }
 
-// Ranking System
-class RankingSystem {
-  ArrayList<WorldPlayer> worldPlayers = new ArrayList<WorldPlayer>();
+// Attributes
+class PlayerAttributes {
+  int serve, forehand, backhand, volley, speed, stamina, mental;
+  PlayerAttributes(int sv, int fh, int bh, int vo, int sp, int st, int mn) {
+    serve = sv; forehand = fh; backhand = bh; volley = vo;
+    speed = sp; stamina = st; mental = mn;
+  }
+}
 
-  void generateWorldPlayers(int count, SportConfig cfg) {
-    ArrayList<String> first = new ArrayList<String>();
-    ArrayList<String> last  = new ArrayList<String>();
-    ArrayList<String> nat   = new ArrayList<String>();
+// Form
+class PlayerForm {
+  float confidence     = 60;
+  float fatigue        = 20;
+  float momentum       = 50;
+  float matchSharpness = 50;
 
-    for (int i = 0; i < cfg.oppFirst.length; i++) {
-      first.add(cfg.oppFirst[i]);
-      last.add(cfg.oppLast[i]);
-      nat.add(cfg.oppNations[i]);
+  void applyMatchResult(boolean won, boolean wasClose) {
+    if (won) {
+      confidence     = min(100, confidence + (wasClose ? 8 : 5));
+      momentum       = min(100, momentum + 6);
+      matchSharpness = min(100, matchSharpness + 4);
+    } else {
+      confidence = max(0, confidence - (wasClose ? 3 : 8));
+      momentum   = max(0, momentum - 5);
     }
-    String[] gFirst = {"Marco","Alexei","Diego","Paulo","Kim","Chen","Ivan","Raj","Omar","Luis",
-                       "Andre","Victor","Felix","Emil","Hans","Pablo","Jorge","Finn","Lars","Sven",
-                       "Bruno","Gabriel","Carlos","Antonio","Pedro","Nicolas","Adrian","Max","Ben","Jake",
-                       "Luca","Tomas","Yuki","Hiro","Wei","Soo","Ali","Amir","Kemal","Thiago",
-                       "Damien","Remi","Pierre","Franco","Sergio"};
-    String[] gLast  = {"Romano","Petrov","Cruz","Santos","Park","Wang","Novak","Patel","Hassan","Gomez",
-                       "Silva","Costa","Weber","Schulz","Hansen","Moreno","Rivera","Berg","Andersen","Larsson",
-                       "Ferrari","Oliveira","Rodriguez","Fernandez","Martinez","Torres","Reyes","Fischer","Muller","Wilson",
-                       "Rossi","Dvorak","Tanaka","Sato","Chen","Kim","Sahin","Nazari","Yilmaz","Cavalcanti",
-                       "Durand","Laurent","Dupont","Russo","Esposito"};
-    String[] gNat   = {"Italy","Russia","Mexico","Brazil","Korea","China","Serbia","India","Egypt","Spain",
-                       "Brazil","Portugal","Germany","Germany","Denmark","Spain","Mexico","Norway","Denmark","Sweden",
-                       "Italy","Brazil","Argentina","Spain","Spain","Spain","Mexico","Germany","Germany","USA",
-                       "Italy","Czech","Japan","Japan","China","Korea","Turkey","Iran","Turkey","Brazil",
-                       "France","France","France","Italy","Italy"};
+    fatigue = min(100, fatigue + random(8, 18));
+  }
 
-    for (int i = 0; i < gFirst.length && first.size() < 50; i++) {
-      first.add(gFirst[i]); last.add(gLast[i]); nat.add(gNat[i]);
+  void applyRestWeek() {
+    fatigue        = max(0, fatigue - random(15, 25));
+    matchSharpness = max(0, matchSharpness - 5);
+    momentum       = max(0, momentum - 3);
+  }
+
+  void applyTrainingWeek(float intensity) {
+    fatigue    = min(100, fatigue + intensity * 0.4);
+    confidence = min(100, confidence + 2);
+  }
+}
+
+// Health
+class PlayerHealth {
+  InjuryStatus status         = InjuryStatus.HEALTHY;
+  String       injuredPart    = "";
+  int          weeksRemaining = 0;
+
+  float injuryRisk(PlayerForm form, float intensity) {
+    float base = 0.03;
+    base += map(form.fatigue, 0, 100, 0, 0.12);
+    base += intensity * 0.05;
+    return base;
+  }
+
+  void advanceWeek() {
+    if (weeksRemaining > 0) {
+      weeksRemaining--;
+      if (weeksRemaining == 0) {
+        status      = InjuryStatus.HEALTHY;
+        injuredPart = "";
+      }
     }
+  }
 
-    worldPlayers.clear();
-    int n = min(count, first.size());
-    for (int i = 0; i < n; i++) {
-      WorldPlayer wp = new WorldPlayer();
-      wp.name        = first.get(i) + " " + last.get(i);
-      wp.nationality = nat.get(i);
-      wp.ranking     = i + 1;
-      wp.points      = (int)map(i, 0, n, 11000, 1500) + (int)random(-200, 200);
-      worldPlayers.add(wp);
+  boolean isAvailable() {
+    return status == InjuryStatus.HEALTHY || status == InjuryStatus.DAY_TO_DAY;
+  }
+
+  void applyInjury(String part, int weeks) {
+    injuredPart    = part;
+    weeksRemaining = weeks;
+    if (weeks <= 1)      status = InjuryStatus.DAY_TO_DAY;
+    else if (weeks <= 6) status = InjuryStatus.OUT_WEEKS;
+    else                 status = InjuryStatus.OUT_MONTHS;
+  }
+}
+
+// Career stats
+class PlayerCareer {
+  int   worldRanking      = 250;
+  int   rankingPoints     = 0;
+  int   titlesWon         = 0;
+  int   grandSlamTitles   = 0;
+  int   weeksAtNumberOne  = 0;
+  float prizeMoney        = 0;
+  ArrayList<String>      careerHistory = new ArrayList<String>();
+  ArrayList<MatchResult> recentResults = new ArrayList<MatchResult>();
+
+  String ageGroup      = "Open"; // "U10","U12","U14","U16","U18","U21","Open"
+  int    juniorRanking = 500;
+  int    collegeRanking = 0;
+  String currentOrg   = ""; // "USTA Juniors","AAU","NHSAA","NCAA","ATP","NBA","NFL","MLB","PGA","WBC"
+
+  void addPoints(int pts) {
+    rankingPoints += pts;
+    rankingPoints = max(0, rankingPoints);
+  }
+
+  void recordTitle(boolean isGrandSlam, float prize) {
+    titlesWon++;
+    prizeMoney += prize;
+    if (isGrandSlam) grandSlamTitles++;
+  }
+
+  void addHistory(String entry) { careerHistory.add(entry); }
+
+  void addResult(MatchResult r) {
+    recentResults.add(0, r);
+    if (recentResults.size() > 10) recentResults.remove(recentResults.size() - 1);
+  }
+
+  void addPrizeMoney(float amount) { prizeMoney += amount; } // OOP: Encapsulation
+}
+
+class AcademicRecord {
+  boolean inHighSchool = false;
+  boolean inCollege = false;
+  String schoolName = "";
+  String collegeName = "";
+  float gpa = 3.2;
+  int collegeYear = 0;
+  boolean hasScholarship = false;
+  float scholarshipValue = 0;
+  boolean wentPro = false;
+  ArrayList<CollegeOffer> offers = new ArrayList<CollegeOffer>();
+}
+
+class CollegeOffer {
+  String school, conference;
+  float scholarshipPct, prestigeRating;
+  boolean isD1;
+  CollegeOffer(String s, String c, float sp, float p, boolean d) {
+    school=s; conference=c; scholarshipPct=sp; prestigeRating=p; isD1=d;
+  }
+}
+
+// Personality
+class PlayerPersonality {
+  float clutchFactor  = 50 + random(-15, 15);
+  float aggression    = 50 + random(-15, 15);
+  float consistency   = 50 + random(-15, 15);
+  float adaptability  = 50 + random(-15, 15);
+  float determination = 50 + random(-15, 15);
+}
+
+// Progression
+class PlayerProgression {
+  Player player;
+  PlayerProgression(Player p) { player = p; }
+
+  int peakAge() {
+    switch (player.playStyle) {
+      case SERVE_VOLLEY:         return 25;
+      case AGGRESSIVE_BASELINER: return 26;
+      case COUNTER_PUNCHER:      return 28;
+      default:                   return 27;
+    }
+  }
+
+  void applyTrainingGains(TrainingSession session) {
+    PlayerAttributes a = player.baseAttributes;
+    TrainingOutcome  o = session.projectedGains();
+    a.serve    = min(99, a.serve    + o.serveGain);
+    a.forehand = min(99, a.forehand + o.forehandGain);
+    a.backhand = min(99, a.backhand + o.backhandGain);
+    a.speed    = min(99, a.speed    + o.speedGain);
+    a.stamina  = min(99, a.stamina  + o.staminaGain);
+    a.mental   = min(99, a.mental   + o.mentalGain);
+    player.form.fatigue = min(100, player.form.fatigue + o.fatigueAdded);
+  }
+
+  void applyAgingDecay(int currentYear) {
+    int age  = player.age(currentYear);
+    int peak = peakAge();
+    if (age > peak) {
+      float decay = 0.003 * (age - peak);
+      PlayerAttributes a = player.baseAttributes;
+      a.speed   = max(30, (int)(a.speed   - decay * 100));
+      a.stamina = max(30, (int)(a.stamina - decay * 80));
+      a.serve   = max(30, (int)(a.serve   - decay * 40));
     }
   }
 }
 
-class WorldPlayer {
-  String name, nationality;
-  int    ranking, points;
+// Family
+class Family implements Simulatable { // OOP: Simulatable interface
+  Spouse               spouse          = null;
+  ArrayList<Child>     children        = new ArrayList<Child>();
+  float                familyHappiness = 70;
+  float                travelTolerance = 80;
+  RelationshipStatus   status          = RelationshipStatus.SINGLE;
+
+  void advanceYear(float weeksAway) {
+    if (spouse != null) {
+      if (weeksAway > 30) {
+        familyHappiness   = max(0, familyHappiness - 10);
+        spouse.resentment = min(100, spouse.resentment + 8);
+      } else {
+        familyHappiness   = min(100, familyHappiness + 5);
+        spouse.resentment = max(0, spouse.resentment - 3);
+      }
+    }
+    for (Child c : children) {
+      c.age++;
+      c.happiness = constrain(c.happiness + (weeksAway > 30 ? -5 : 3), 0, 100);
+    }
+  }
+
+  void simulateWeek(Player p, int year) { // OOP: Simulatable
+    if (p.finances != null) advanceYear(52); // called weekly — scale internally
+  }
+
+  String partnerName()   { return spouse != null ? spouse.name : ""; }
+
+  String tryMeetPartner() {
+    String[] names = {
+      "Sofia","Camila","Isabella","Valentina","Luna","Elena","Natalia",
+      "Alessia","Mia","Zara","Jade","Leila","Priya","Yuki","Amara",
+      "Chloe","Ines","Lara","Nadia","Rosa"
+    };
+    return names[(int)random(names.length)];
+  }
+
+  String statusDisplay() {
+    if (spouse != null) {
+      switch (status) {
+        case MARRIED:   return "Married to " + spouse.name;
+        case ENGAGED:   return "Engaged to " + spouse.name;
+        case DATING:    return "Dating " + spouse.name;
+        case SEPARATED: return "Separated";
+        case DIVORCED:  return "Divorced";
+        default:        return "With " + spouse.name;
+      }
+    }
+    return "Single";
+  }
 }
+
+class Spouse {
+  String name;
+  float  supportLevel = 70 + random(-20, 20);
+  float  resentment   = 10;
+  Spouse(String n) { name = n; }
+}
+
+class Child {
+  String name;
+  int    age;
+  float  happiness = 80;
+  Child(String n, int a) { name = n; age = a; }
+}
+
+// Coach
+class Coach {
+  String name, specialization, personality;
+  CoachType type;
+  float effectiveness, loyalty, salary;
+  int yearsWorked;
+  Coach(String n, CoachType t, float eff, float sal) {
+    name=n; type=t; effectiveness=eff; salary=sal;
+    loyalty=60+random(-15,15); yearsWorked=0;
+    String[] p={"Taskmaster","Mentor","Analyst","Motivator","Tactician"};
+    personality=p[(int)random(p.length)];
+    switch(t){
+      case HEAD_COACH:       specialization="Overall Strategy"; break;
+      case FITNESS_TRAINER:  specialization="Strength & Conditioning"; break;
+      case MENTAL_COACH:     specialization="Sports Psychology"; break;
+      case TECHNICAL_COACH:  specialization="Technical Skills"; break;
+      case NUTRITION_COACH:  specialization="Performance Nutrition"; break;
+      default: specialization="General";
+    }
+  }
+  float trainingMult() { return map(effectiveness,0,100,0.7f,1.5f); }
+  String tier() { return effectiveness>=85?"ELITE":effectiveness>=70?"PRO":effectiveness>=55?"EXP":"ENTRY"; }
+  color tierColor() { return effectiveness>=85?color(255,210,60):effectiveness>=70?color(185,95,255):effectiveness>=55?color(75,165,255):color(130,140,185); }
+  String emoji() { switch(type){case HEAD_COACH:return "🎯";case FITNESS_TRAINER:return "💪";case MENTAL_COACH:return "🧠";case TECHNICAL_COACH:return "📐";case NUTRITION_COACH:return "🥗";default:return "👤";} }
+}
+
+class CoachingStaff {
+  ArrayList<Coach> coaches = new ArrayList<Coach>();
+  int maxCoaches = 3;
+  float overallMult() {
+    float m=1.0f;
+    for(Coach c:coaches) if(c.type==CoachType.HEAD_COACH||c.type==CoachType.FITNESS_TRAINER) m*=0.85f+c.effectiveness*0.003f;
+    return constrain(m,0.7f,2.0f);
+  }
+  float weeklyWages() { float t=0; for(Coach c:coaches) t+=c.salary; return t; }
+  Coach get(CoachType t) { for(Coach c:coaches) if(c.type==t) return c; return null; }
+  String getSummary() { return coaches.size()+"/"+maxCoaches+" coaches, $"+(int)weeklyWages()+"K/wk, "+nf(overallMult(),1,2)+"x mult"; }
+}
+
 // ============================================================
-// LEGACY SCREEN
+// NUTRITION SYSTEM
 // ============================================================
-class LegacyScreen extends BaseScreen {
+class NutritionPlan {
+  String name;
+  float weeklyCost;
+  float staminaBonus, speedBonus, recoveryBonus, injuryResistance;
+  color planColor;
+  String emoji;
+  NutritionPlan(String n, float cost, float stam, float spd, float rec, float inj, color col, String em) {
+    name=n; weeklyCost=cost; staminaBonus=stam; speedBonus=spd;
+    recoveryBonus=rec; injuryResistance=inj; planColor=col; emoji=em;
+  }
+}
+
+class Supplement {
+  String name, category; // "Legal","Gray Area","PED"
+  float weeklyEffect;    // stat boost
+  float weeklyCost;
+  boolean detected = false;
+  int weeksUsed = 0;
+  Supplement(String n, String cat, float eff, float cost) {
+    name=n; category=cat; weeklyEffect=eff; weeklyCost=cost;
+  }
+}
+
+class NutritionSystem implements Simulatable { // OOP: Simulatable interface
+  int currentPlanIdx = 1; // default BASIC
+  boolean hasNutritionist = false;
+  float nutritionistCostPerWeek = 3;
+  ArrayList<Supplement> activeSupplements = new ArrayList<Supplement>();
+  int hydrationLevel = 70; // 0-100
+
+  NutritionPlan[] getPlans() {
+    return new NutritionPlan[]{
+      new NutritionPlan("Fast Food",      0.5,  -5, -3, -5,  -8, color(255,75,75),   "F"),
+      new NutritionPlan("Basic Meals",    1.5,   0,  0,  0,   0, color(130,140,185), "B"),
+      new NutritionPlan("Balanced Diet",  3.0,   5,  3,  5,   5, color(50,220,120),  "D"),
+      new NutritionPlan("Athlete Diet",   6.0,  10,  6, 10,  10, color(75,165,255),  "A"),
+      new NutritionPlan("Elite Protocol",12.0,  15, 10, 15,  18, color(255,210,60),  "E")
+    };
+  }
+
+  NutritionPlan currentPlan() { return getPlans()[currentPlanIdx]; }
+
+  float weeklyTotalCost() {
+    float c = currentPlan().weeklyCost;
+    if (hasNutritionist) c += nutritionistCostPerWeek;
+    for (Supplement s : activeSupplements) c += s.weeklyCost;
+    return c;
+  }
+
+  void applyWeeklyEffects(Player p) {
+    NutritionPlan plan = currentPlan();
+    // Apply to base attributes
+    p.baseAttributes.stamina = constrain(p.baseAttributes.stamina + (int)(plan.staminaBonus * 0.02), 1, 99);
+    p.baseAttributes.speed   = constrain(p.baseAttributes.speed   + (int)(plan.speedBonus   * 0.02), 1, 99);
+    // Fatigue recovery bonus
+    p.form.fatigue = max(0, p.form.fatigue - plan.recoveryBonus * 0.1);
+    // Hydration drift
+    hydrationLevel = (int)constrain(hydrationLevel + (plan.staminaBonus > 0 ? 2 : -1), 0, 100);
+    // Supplement effects
+    for (Supplement s : activeSupplements) {
+      s.weeksUsed++;
+      p.baseAttributes.serve = constrain(p.baseAttributes.serve + (int)(s.weeklyEffect * 0.03), 1, 99);
+      // PED detection risk
+      if (s.category.equals("PED") && random(1) < 0.04) {
+        s.detected = true;
+        p.legalStatus = LegalStatus.INVESTIGATED;
+        p.career.addHistory("Failed drug test - " + s.name + " detected");
+      }
+    }
+  }
+
+  void simulateWeek(Player p, int year) { applyWeeklyEffects(p); } // OOP: Simulatable
+
+  void setPlan(int idx) { currentPlanIdx = constrain(idx, 0, getPlans().length-1); }
+
+  ArrayList<Supplement> getAvailableSupplements() {
+    ArrayList<Supplement> list = new ArrayList<Supplement>();
+    list.add(new Supplement("Protein Shake",    "Legal",     2,  0.5));
+    list.add(new Supplement("Creatine",         "Legal",     4,  1.0));
+    list.add(new Supplement("Electrolytes",     "Legal",     1,  0.3));
+    list.add(new Supplement("Beta-Alanine",     "Legal",     3,  0.8));
+    list.add(new Supplement("DHEA",             "Gray Area", 7,  2.0));
+    list.add(new Supplement("HGH Precursors",   "Gray Area",10,  4.0));
+    list.add(new Supplement("Anabolic Steroids","PED",      20, 10.0));
+    list.add(new Supplement("EPO",              "PED",      15,  8.0));
+    return list;
+  }
+}
+
+// OOP: Encapsulation
+// Finances (extended)
+class PlayerFinances {
+  float         savings         = 10_000;
+  float         weeklyExpenses  = 500;
+  LifestyleTier lifestyle       = LifestyleTier.FRUGAL;
+  ArrayList<String> endorsements     = new ArrayList<String>();
+  float endorsementIncome       = 0;
+
+  ArrayList<OwnedProperty>   properties  = new ArrayList<OwnedProperty>();
+  ArrayList<OwnedVehicle>    vehicles    = new ArrayList<OwnedVehicle>();
+  ArrayList<OwnedInvestment> investments = new ArrayList<OwnedInvestment>();
+  ArrayList<OwnedBusiness>   businesses  = new ArrayList<OwnedBusiness>();
+  float totalDebt = 0;
+
+  float weeklyExpensesForTier(LifestyleTier t) {
+    switch (t) {
+      case FRUGAL:      return 500;
+      case COMFORTABLE: return 2_500;
+      case LUXURY:      return 7_500;
+      case LAVISH:      return 20_000;
+      default:          return 2_500;
+    }
+  }
+
+  void setLifestyle(LifestyleTier t) {
+    lifestyle      = t;
+    weeklyExpenses = weeklyExpensesForTier(t);
+  }
+
+  void addEndorsement(String name, float weeklyValue) {
+    endorsements.add(name + " ($" + (int)weeklyValue + "/wk)");
+    endorsementIncome += weeklyValue;
+  }
+
+  float endorsementIncomeForRank(int rank) {
+    if (rank <=   5) return 18_000;
+    if (rank <=  15) return  8_000;
+    if (rank <=  50) return  3_000;
+    if (rank <= 100) return  1_200;
+    if (rank <= 200) return    300;
+    return 80;
+  }
+
+  String lifestyleLabel() {
+    switch (lifestyle) {
+      case FRUGAL:      return "Frugal";
+      case COMFORTABLE: return "Comfortable";
+      case LUXURY:      return "Luxury";
+      case LAVISH:      return "Lavish";
+      default:          return "Comfortable";
+    }
+  }
+
+  float totalInvestmentValue() {
+    float v = 0;
+    for (OwnedInvestment i : investments) v += i.currentValue;
+    return v;
+  }
+
+  float totalPropertyValue() {
+    float v = 0;
+    for (OwnedProperty p : properties) v += p.currentValue;
+    return v;
+  }
+
+  float totalWeeklyPropertyCost() {
+    float c = 0;
+    for (OwnedProperty p : properties) c += p.weeklyTotal();
+    return c;
+  }
+
+  float totalWeeklyVehicleCost() {
+    float c = 0;
+    for (OwnedVehicle v : vehicles) c += v.weeklyUpkeep;
+    return c;
+  }
+
+  float totalWeeklyBusinessRevenue() {
+    float r = 0;
+    for (OwnedBusiness b : businesses) r += b.weeklyProfit();
+    return r;
+  }
+
+  float netWorth() {
+    return savings + totalInvestmentValue() + totalPropertyValue();
+  }
+
+  // OOP: Encapsulation — financial mutations go through validated methods
+  void deposit(float amount) { if (amount > 0) savings += amount; } // OOP: Encapsulation
+  void withdraw(float amount) { savings = max(0, savings - amount); }
+}
+
+// Rivalry
+class Rivalry {
+  Player playerOne, playerTwo;
+  int wins = 0, losses = 0;
+  ArrayList<String> matchHistory = new ArrayList<String>();
+
+  Rivalry(Player p1, Player p2) { playerOne = p1; playerTwo = p2; }
+
+  float psychologicalEdge() {
+    int total = wins + losses;
+    if (total == 0) return 0;
+    return map(wins, 0, total, -10, 10);
+  }
+}
+
+// Reputation
+class Reputation {
+  float publicImage       = 60;
+  float mediaRelationship = 60;
+  float leagueReputation  = 60;
+
+  void applyPositive(float amount) {
+    publicImage       = constrain(publicImage       + amount,        0, 100);
+    mediaRelationship = constrain(mediaRelationship + amount * 0.7,  0, 100);
+    leagueReputation  = constrain(leagueReputation  + amount * 0.5,  0, 100);
+  }
+
+  void applyNegative(float amount) {
+    publicImage       = constrain(publicImage       - amount,        0, 100);
+    mediaRelationship = constrain(mediaRelationship - amount * 1.2,  0, 100);
+  }
+}
+
+// Parents
+class Parents {
+  Parent mom;
+  Parent dad;
+
+  Parents() {
+    String[] momNames = {"Maria","Elena","Sofia","Ana","Isabel","Carmen","Laura","Rosa","Julia","Paula",
+                         "Sarah","Jennifer","Emma","Olivia","Fatima","Yuki","Mei","Priya","Aisha","Linda"};
+    String[] dadNames = {"Carlos","Miguel","Antonio","David","Jorge","Luis","Roberto","Pedro","Fernando","Ricardo",
+                         "James","Robert","William","Michael","Omar","Hiroshi","Wei","Raj","Ahmed","John"};
+    mom = new Parent(momNames[(int)random(momNames.length)]);
+    dad = new Parent(dadNames[(int)random(dadNames.length)]);
+  }
+}
+
+class Parent {
+  String  name;
+  float   relationship;
+  boolean alive = true;
+
+  Parent(String n) {
+    name         = n;
+    relationship = constrain(70 + random(-20, 20), 30, 100);
+  }
+
+  String relationshipLabel() {
+    if (relationship >= 85) return "Very Close";
+    if (relationship >= 65) return "Good";
+    if (relationship >= 45) return "Distant";
+    return "Estranged";
+  }
+
+  color relationshipColor() {
+    if (relationship >= 75) return color(55, 185, 95);
+    if (relationship >= 50) return color(80, 140, 220);
+    if (relationship >= 30) return color(220, 160, 40);
+    return color(210, 65, 65);
+  }
+}
+
+// ============================================================
+// MENTAL HEALTH SYSTEM
+// ============================================================
+class MentalHealthSystem implements Simulatable { // OOP: Simulatable interface
+  MentalState state         = MentalState.STABLE;
+  float       stressLevel   = 30;
+  float       happiness     = 70;
+  boolean     inTherapy     = false;
+  int         therapyWeeks  = 0;
+
+  void updateWeek(boolean hadTournamentWin, boolean hadTournamentLoss, boolean rested) {
+    if (hadTournamentWin)  { stressLevel = max(0, stressLevel - 6); happiness = min(100, happiness + 10); }
+    if (hadTournamentLoss) { stressLevel = min(100, stressLevel + 9); happiness = max(0, happiness - 7); }
+    if (rested)            { stressLevel = max(0, stressLevel - 4); }
+    if (inTherapy) {
+      therapyWeeks--;
+      stressLevel = max(0, stressLevel - 7);
+      happiness   = min(100, happiness + 5);
+      if (therapyWeeks <= 0) { inTherapy = false; therapyWeeks = 0; }
+    }
+    stressLevel += random(-2, 3);
+    stressLevel  = constrain(stressLevel, 0, 100);
+    happiness    = constrain(happiness,   0, 100);
+    recalcState();
+  }
+
+  void advanceWeek() {
+    updateWeek(false, false, false);
+  }
+
+  void simulateWeek(Player p, int year) { advanceWeek(); } // OOP: Simulatable
+
+  void recalcState() {
+    if      (stressLevel >= 80 || happiness <= 15) state = MentalState.BURNED_OUT;
+    else if (stressLevel >= 65 || happiness <= 25) state = MentalState.DEPRESSED;
+    else if (stressLevel >= 50 || happiness <= 40) state = MentalState.ANXIOUS;
+    else if (stressLevel >= 35 || happiness <= 55) state = MentalState.STRESSED;
+    else if (stressLevel >= 20 || happiness <= 70) state = MentalState.STABLE;
+    else state = MentalState.THRIVING;
+  }
+
+  float performanceModifier() {
+    switch (state) {
+      case THRIVING:   return 1.10;
+      case STABLE:     return 1.00;
+      case STRESSED:   return 0.95;
+      case ANXIOUS:    return 0.88;
+      case DEPRESSED:  return 0.80;
+      case BURNED_OUT: return 0.70;
+      default:         return 1.00;
+    }
+  }
+
+  void startTherapy(int weeks) { inTherapy = true; therapyWeeks = weeks; }
+
+  color stateColor() {
+    switch (state) {
+      case THRIVING:   return color(55, 185, 95);
+      case STABLE:     return color(80, 140, 220);
+      case STRESSED:   return color(220, 160, 40);
+      case ANXIOUS:    return color(200, 120, 40);
+      case DEPRESSED:  return color(160, 80, 160);
+      case BURNED_OUT: return color(210, 65, 65);
+      default:         return color(120, 130, 150);
+    }
+  }
+
+  String stateLabel() {
+    switch (state) {
+      case THRIVING:   return "Thriving";
+      case STABLE:     return "Stable";
+      case STRESSED:   return "Stressed";
+      case ANXIOUS:    return "Anxious";
+      case DEPRESSED:  return "Depressed";
+      case BURNED_OUT: return "Burned Out";
+      default:         return "Unknown";
+    }
+  }
+}
+
+// ============================================================
+// RIVAL SYSTEM
+// ============================================================
+interface Trackable {
+  String getSummaryLine();
+  boolean isActive();
+}
+
+class Rival implements Trackable {
+  String name, nationality;
+  int    ranking, h2hWins, h2hLosses, yearDebuted;
+  float  trashTalkLevel; // 0-100
+  boolean active;        // renamed from isActive to avoid method-name conflict
+
+  Rival(String n, String nat, int rank, int year) {
+    name = n; nationality = nat; ranking = rank; yearDebuted = year;
+    trashTalkLevel = 30; active = true;
+  }
+
+  String getSummaryLine() { return name + " H2H: " + h2hWins + "-" + h2hLosses; }
+  boolean isActive() { return active; }
+
+  String verdict() {
+    if (h2hWins > h2hLosses)   return "Dominated";
+    if (h2hLosses > h2hWins)   return "They had the edge";
+    return "Even";
+  }
+}
+
+// ============================================================
+// SPORT CONFIG
+// ============================================================
+class SportConfig {
+  String   name;
+  String   subtitle;
+  String[] statNames;
+  String[] roleShort;
+  String[] roleFull;
+  String   rankLabel;
+  String   ptsLabel;
+  String   titlesLabel;
+  String   majorLabel;
+  String[] oppFirst;
+  String[] oppLast;
+  String[] oppNations;
+
+  SportConfig(String name, String subtitle,
+              String[] statNames, String[] roleShort, String[] roleFull,
+              String rankLabel, String ptsLabel, String titlesLabel, String majorLabel,
+              String[] oppFirst, String[] oppLast, String[] oppNations) {
+    this.name      = name;
+    this.subtitle  = subtitle;
+    this.statNames = statNames;
+    this.roleShort = roleShort;
+    this.roleFull  = roleFull;
+    this.rankLabel  = rankLabel;
+    this.ptsLabel   = ptsLabel;
+    this.titlesLabel = titlesLabel;
+    this.majorLabel  = majorLabel;
+    this.oppFirst   = oppFirst;
+    this.oppLast    = oppLast;
+    this.oppNations = oppNations;
+  }
+
+  // OOP: Factory pattern — SportConfig.create() is a factory method
+  SportConfig create(Sport s) {
+    return getSportConfig(s);
+  }
+}
+
+SportConfig getSportConfig(Sport sport) {
+  switch (sport) {
+
+    case BASKETBALL:
+      return new SportConfig("Basketball", "NBA CAREER SIMULATOR",
+        new String[]{"SHOOTING","DRIBBLING","PASSING","DEFENSE","REBOUNDING","ATHLETICISM","IQ"},
+        new String[]{"PG","SG","SF","PF"},
+        new String[]{"Point Guard","Shooting Guard","Small Forward","Power Forward"},
+        "NBA RANK","CAREER WINS","TITLES","RINGS",
+        new String[]{"LeBron","Stephen","Kevin","Giannis","Luka","Nikola","Joel","Jayson","Damian","Kawhi"},
+        new String[]{"James","Curry","Durant","Antetokounmpo","Doncic","Jokic","Embiid","Tatum","Lillard","Leonard"},
+        new String[]{"USA","USA","USA","Greece","Slovenia","Serbia","Cameroon","USA","USA","Canada"});
+
+    case SOCCER:
+      return new SportConfig("Soccer", "FOOTBALL CAREER SIMULATOR",
+        new String[]{"PACE","SHOOTING","PASSING","DRIBBLING","PHYSICALITY","STAMINA","VISION"},
+        new String[]{"STR","MID","DEF","GK"},
+        new String[]{"Striker","Midfielder","Defender","Goalkeeper"},
+        "WORLD RANK","CAREER GOALS","TITLES","WORLD CUPS",
+        new String[]{"Kylian","Erling","Vinicius","Rodri","Bukayo","Phil","Jude","Pedri","Florian","Leroy"},
+        new String[]{"Mbappe","Haaland","Junior","Rodriguez","Saka","Foden","Bellingham","Gonzalez","Wirtz","Sane"},
+        new String[]{"France","Norway","Brazil","Spain","England","England","England","Spain","Germany","Germany"});
+
+    case GOLF:
+      return new SportConfig("Golf", "PGA TOUR CAREER SIMULATOR",
+        new String[]{"DRIVING","IRON PLAY","CHIPPING","PUTTING","MENTAL","ACCURACY","DISTANCE"},
+        new String[]{"PWR","PREC","SHT","ALL"},
+        new String[]{"Power Hitter","Precision Player","Short Game Spec.","All-Round"},
+        "WORLD RANK","TOUR WINS","TITLES","MAJOR WINS",
+        new String[]{"Scottie","Rory","Jon","Xander","Viktor","Collin","Cameron","Patrick","Max","Brooks"},
+        new String[]{"Scheffler","McIlroy","Rahm","Schauffele","Hovland","Morikawa","Smith","Cantlay","Homa","Koepka"},
+        new String[]{"USA","N.Ireland","Spain","USA","Norway","USA","Australia","USA","USA","USA"});
+
+    case BOXING:
+      return new SportConfig("Boxing", "PROFESSIONAL BOXING CAREER SIMULATOR",
+        new String[]{"JAB","POWER","DEFENSE","FOOTWORK","CHIN","STAMINA","RING IQ"},
+        new String[]{"OUT","BRAW","CNTR","B-P"},
+        new String[]{"Outboxer","Brawler","Counter Puncher","Boxer-Puncher"},
+        "WORLD RANK","CAREER WINS","TITLES","WORLD TITLES",
+        new String[]{"Oleksandr","Tyson","Anthony","Deontay","Naoya","Canelo","Terence","Vasyl","Ryan","Errol"},
+        new String[]{"Usyk","Fury","Joshua","Wilder","Inoue","Alvarez","Crawford","Lomachenko","Garcia","Spence"},
+        new String[]{"Ukraine","UK","UK","USA","Japan","Mexico","USA","Ukraine","USA","USA"});
+
+    default: // TENNIS
+      return new SportConfig("Tennis", "PROFESSIONAL TENNIS CAREER SIMULATOR",
+        new String[]{"SERVE","FOREHAND","BACKHAND","VOLLEY","SPEED","STAMINA","MENTAL"},
+        new String[]{"AGGR","CNTR","S&V","ALL"},
+        new String[]{"Aggressive Baseliner","Counter Puncher","Serve & Volley","All Court"},
+        "WORLD RANKING","RANKING PTS","TITLES","GS TITLES",
+        new String[]{"Carlos","Novak","Roger","Rafael","Jannik","Daniil","Alexander","Andrey","Holger","Taylor"},
+        new String[]{"Alcaraz","Djokovic","Federer","Nadal","Sinner","Medvedev","Zverev","Rublev","Rune","Fritz"},
+        new String[]{"Spain","Serbia","Switzerland","Spain","Italy","Russia","Germany","Russia","Denmark","USA"});
+  }
+}
+
+
+// ============================================================
+// Simulation.pde
+// ============================================================
+
+/**
+ * Simulation — Match engine, tournament calendar, and training system.
+ * OOP role: Strategy pattern (SportCalendarBuilder), Composition, Encapsulation
+ * Collaborators: GameEngine, Player, Tournament
+ */
+
+// ============================================================
+// MATCH RESULT
+// ============================================================
+class MatchResult {
+  String winnerName, loserName;
+  String score;
+  int   rankingPointsAwarded;
+  float prizeMoneyAwarded;
+  boolean playerWon;
+  String tournamentName;
+  RoundName round;
+
+  MatchResult(String w, String l, String sc, int pts, float prize,
+              boolean pw, String tn, RoundName r) {
+    winnerName           = w;
+    loserName            = l;
+    score                = sc;
+    rankingPointsAwarded = pts;
+    prizeMoneyAwarded    = prize;
+    playerWon            = pw;
+    tournamentName       = tn;
+    round                = r;
+  }
+}
+
+// ============================================================
+// MATCH ENGINE
+// ============================================================
+class MatchEngine {
+  // ── Balance constants ─────────────────────────────────────────
+  // Tune these to adjust game feel without touching logic
+  final float WIN_PROB_NOISE    = 0.08; // ±random swing per match
+  final float MIN_WIN_PROB      = 0.05; // floor so upsets possible
+  final float MAX_WIN_PROB      = 0.95; // ceiling so upsets possible
+  final float CLUTCH_RANGE      = 10.0; // personality clutch adds ±this
+  final float SURFACE_BONUS_MAX =  8.0; // max surface advantage
+  final float SIGMOID_SCALE     = 15.0; // steepness of win prob curve
+
+  MatchResult simulate(Player player, OpponentProfile opp,
+                       Surface surface, TournamentTier tier,
+                       RoundName round, int currentYear, Sport sport) {
+    PlayerAttributes eff = player.effectiveAttributes();
+
+    float surfBonus = (sport == Sport.TENNIS) ? getSurfaceBonus(player.playStyle, surface) : 0;
+    float playerRating = (eff.serve    * 0.20 + eff.forehand * 0.18 +
+                          eff.backhand * 0.15 + eff.speed    * 0.15 +
+                          eff.stamina  * 0.12 + eff.mental   * 0.20) + surfBonus;
+
+    float clutch = player.personality.clutchFactor;
+    playerRating += map(clutch, 0, 100, -CLUTCH_RANGE/2, CLUTCH_RANGE/2);
+    playerRating += player.career.worldRanking < opp.ranking ? 2 : -1;
+
+    float diff    = playerRating - opp.rating;
+    float winProb = 1.0 / (1.0 + exp(-diff / SIGMOID_SCALE));
+    winProb       = constrain(winProb + random(-WIN_PROB_NOISE, WIN_PROB_NOISE), MIN_WIN_PROB, MAX_WIN_PROB);
+
+    boolean playerWon = random(1) < winProb;
+    String score = generateScore(playerWon, sport);
+
+    int   pts   = getPoints(tier, round, playerWon);
+    float prize = getPrize(tier, round, playerWon);
+
+    String winner = playerWon ? player.name : opp.name;
+    String loser  = playerWon ? opp.name    : player.name;
+
+    return new MatchResult(winner, loser, score, pts, prize, playerWon, "", round);
+  }
+
+  float getSurfaceBonus(PlayStyle style, Surface surf) {
+    if (style == PlayStyle.SERVE_VOLLEY         && surf == Surface.GRASS) return 6;
+    if (style == PlayStyle.AGGRESSIVE_BASELINER && surf == Surface.HARD)  return 4;
+    if (style == PlayStyle.COUNTER_PUNCHER      && surf == Surface.CLAY)  return 5;
+    if (style == PlayStyle.ALL_COURT) return 2;
+    return 0;
+  }
+
+  String generateScore(boolean won, Sport sport) {
+    switch (sport) {
+      case BASKETBALL: {
+        int myPts  = won ? (int)random(95, 128) : (int)random(82, 108);
+        int oppPts = won ? myPts - (int)random(3, 22) : myPts + (int)random(3, 22);
+        return myPts + "-" + oppPts;
+      }
+      case SOCCER: {
+        int myG  = won ? (int)random(1, 5) : (int)random(0, 2);
+        int oppG = won ? max(0, myG - (int)random(1, 3)) : myG + (int)random(1, 3);
+        return myG + "-" + oppG;
+      }
+      case GOLF: {
+        int score = won ? -(int)random(5, 18) : (int)random(0, 8);
+        return (score <= 0 ? "" : "+") + score;
+      }
+      case BOXING: {
+        if (won) {
+          float r = random(1);
+          if (r < 0.25) return "KO R" + (int)random(1, 8);
+          if (r < 0.45) return "TKO R" + (int)random(3, 10);
+          if (r < 0.75) return "UD 12";
+          return "MD 12";
+        } else {
+          float r = random(1);
+          if (r < 0.20) return "KO'd R" + (int)random(2, 9);
+          if (r < 0.35) return "TKO'd R" + (int)random(4, 11);
+          return "UD Loss 12";
+        }
+      }
+      default: { // TENNIS
+        ArrayList<String> sets = new ArrayList<String>();
+        if (won) {
+          sets.add(random(1) > 0.4 ? "6-" + (int)random(0, 5) : "7-6");
+          sets.add(random(1) > 0.4 ? "6-" + (int)random(0, 5) : "7-6");
+          if (random(1) > 0.6) sets.add(0, (int)random(3, 6) + "-6");
+        } else {
+          sets.add(random(1) > 0.4 ? (int)random(0, 5) + "-6" : "6-7");
+          sets.add(random(1) > 0.4 ? (int)random(0, 5) + "-6" : "6-7");
+          if (random(1) > 0.6) sets.add(0, "6-" + (int)random(3, 6));
+        }
+        String out = "";
+        for (int i = 0; i < sets.size(); i++) {
+          out += sets.get(i);
+          if (i < sets.size() - 1) out += " ";
+        }
+        return out;
+      }
+    }
+  }
+
+  int getPoints(TournamentTier tier, RoundName round, boolean won) {
+    int base = 0;
+    switch (tier) {
+      case GRAND_SLAM:   base = won ? 2000 : 0; break;
+      case MASTERS_1000: base = won ? 1000 : 0; break;
+      case ATP_500:      base = won ? 500  : 0; break;
+      case ATP_250:      base = won ? 250  : 0; break;
+      case CHALLENGER:   base = won ? 125  : 0; break;
+    }
+    switch (round) {
+      case F:   return (int)(base * 1.0);
+      case SF:  return (int)(base * 0.6);
+      case QF:  return (int)(base * 0.36);
+      case R16: return (int)(base * 0.18);
+      case R32: return (int)(base * 0.09);
+      case R64: return (int)(base * 0.045);
+      default:  return (int)(base * 0.02);
+    }
+  }
+
+  float getPrize(TournamentTier tier, RoundName round, boolean won) {
+    float base = 0;
+    switch (tier) {
+      case GRAND_SLAM:   base = won ? 2_000_000 : 0; break;
+      case MASTERS_1000: base = won ? 1_000_000 : 0; break;
+      case ATP_500:      base = won ?   500_000 : 0; break;
+      case ATP_250:      base = won ?   250_000 : 0; break;
+      case CHALLENGER:   base = won ?    50_000 : 0; break;
+    }
+    switch (round) {
+      case F:   return base * 1.0;
+      case SF:  return base * 0.5;
+      case QF:  return base * 0.25;
+      case R16: return base * 0.12;
+      default:  return base * 0.05;
+    }
+  }
+}
+
+// ============================================================
+// OPPONENT PROFILE
+// ============================================================
+class OpponentProfile {
+  String name;
+  String nationality;
+  int    ranking;
+  float  rating;
+  PlayStyle style;
+
+  OpponentProfile(String n, String nat, int rank) {
+    name        = n;
+    nationality = nat;
+    ranking     = rank;
+    rating      = map(rank, 1, 500, 88, 42) + random(-5, 5);
+    PlayStyle[] styles = PlayStyle.values();
+    style = styles[(int)random(styles.length)];
+  }
+}
+
+// ============================================================
+// TOURNAMENT
+// ============================================================
+class Tournament {
+  String name;
+  TournamentTier tier;
+  Surface        surface;
+  int            drawSize;
+  float          prizeMoney;
+  int            week;
+  String         venueLabel = "";
+  Sport          sport      = Sport.TENNIS;
+
+  Tournament(String n, TournamentTier t, Surface s, int draw, float prize, int wk) {
+    name = n; tier = t; surface = s; drawSize = draw; prizeMoney = prize; week = wk;
+  }
+
+  // OOP: Overloaded constructor — allows strategy builders to set sport directly
+  Tournament(String n, TournamentTier t, Surface s, int draw, float prize, int wk, Sport sp) {
+    name = n; tier = t; surface = s; drawSize = draw; prizeMoney = prize; week = wk; sport = sp;
+  }
+
+  TournamentRun simulate(Player player, MatchEngine eng, int currentYear) {
+    RoundName[] rounds = getRounds();
+    TournamentRun run = new TournamentRun(this);
+    SportConfig cfg = getSportConfig(sport);
+
+    for (RoundName round : rounds) {
+      int oppRank = generateOpponentRank(round);
+      OpponentProfile opp = generateOpponent(oppRank, cfg);
+      MatchResult result = eng.simulate(player, opp, surface, tier, round, currentYear, sport);
+      result.tournamentName = name;
+      run.addResult(result);
+      if (!result.playerWon) break;
+    }
+    run.finalRound = run.results.get(run.results.size() - 1).round;
+    run.won        = run.results.get(run.results.size() - 1).playerWon &&
+                     run.finalRound == RoundName.F;
+    return run;
+  }
+
+  RoundName[] getRounds() {
+    if (drawSize >= 128) return new RoundName[]{ RoundName.R128, RoundName.R64, RoundName.R32, RoundName.R16, RoundName.QF, RoundName.SF, RoundName.F };
+    if (drawSize >=  64) return new RoundName[]{               RoundName.R64, RoundName.R32, RoundName.R16, RoundName.QF, RoundName.SF, RoundName.F };
+    if (drawSize >=  32) return new RoundName[]{                              RoundName.R32, RoundName.R16, RoundName.QF, RoundName.SF, RoundName.F };
+    return                       new RoundName[]{                                             RoundName.R16, RoundName.QF, RoundName.SF, RoundName.F };
+  }
+
+  int generateOpponentRank(RoundName round) {
+    switch (round) {
+      case F:   return (int)random(1, 5);
+      case SF:  return (int)random(3, 15);
+      case QF:  return (int)random(8, 30);
+      case R16: return (int)random(20, 60);
+      case R32: return (int)random(40, 100);
+      default:  return (int)random(80, 200);
+    }
+  }
+
+  OpponentProfile generateOpponent(int rank, SportConfig cfg) {
+    int idx = (int)random(cfg.oppFirst.length);
+    return new OpponentProfile(cfg.oppFirst[idx] + " " + cfg.oppLast[idx], cfg.oppNations[idx], rank);
+  }
+}
+
+// ============================================================
+// TOURNAMENT RUN
+// ============================================================
+class TournamentRun {
+  Tournament tournament;
+  ArrayList<MatchResult> results = new ArrayList<MatchResult>();
+  RoundName finalRound;
+  boolean won = false;
+
+  TournamentRun(Tournament t) { tournament = t; }
+
+  void addResult(MatchResult r) { results.add(r); }
+
+  int totalPoints() {
+    int sum = 0;
+    for (MatchResult r : results) sum += r.rankingPointsAwarded;
+    return sum;
+  }
+
+  float totalPrize() {
+    float sum = 0;
+    for (MatchResult r : results) sum += r.prizeMoneyAwarded;
+    return sum;
+  }
+}
+
+// ============================================================
+// SPORT CALENDAR BUILDER — Strategy pattern
+// ============================================================
+
+/**
+ * SportCalendarBuilder — Strategy pattern for building sport-specific schedules.
+ * OOP role: Strategy pattern
+ */
+interface SportCalendarBuilder { // OOP: Strategy pattern
+  void buildSchedule(ArrayList<Tournament> schedule);
+}
+
+class TennisCalendarBuilder implements SportCalendarBuilder {
+  void buildSchedule(ArrayList<Tournament> schedule) {
+    // Copy the existing Tennis schedule from TournamentCalendar.buildTennis()
+    // Use add() calls from the existing code
+    schedule.add(new Tournament("Australian Open",    TournamentTier.GRAND_SLAM,   Surface.HARD,         128, 2_000_000,  2, Sport.TENNIS));
+    schedule.add(new Tournament("Dubai Championships",TournamentTier.ATP_500,      Surface.HARD,          32,   500_000,  5, Sport.TENNIS));
+    schedule.add(new Tournament("Indian Wells Masters",TournamentTier.MASTERS_1000,Surface.HARD,          96, 1_000_000,  9, Sport.TENNIS));
+    schedule.add(new Tournament("Miami Open",          TournamentTier.MASTERS_1000,Surface.HARD,          96, 1_000_000, 12, Sport.TENNIS));
+    schedule.add(new Tournament("Monte-Carlo Masters", TournamentTier.MASTERS_1000,Surface.CLAY,          64, 1_000_000, 15, Sport.TENNIS));
+    schedule.add(new Tournament("Barcelona Open",      TournamentTier.ATP_500,     Surface.CLAY,          48,   500_000, 17, Sport.TENNIS));
+    schedule.add(new Tournament("Madrid Open",         TournamentTier.MASTERS_1000,Surface.CLAY,          96, 1_000_000, 19, Sport.TENNIS));
+    schedule.add(new Tournament("Italian Open",        TournamentTier.MASTERS_1000,Surface.CLAY,          96, 1_000_000, 21, Sport.TENNIS));
+    schedule.add(new Tournament("Roland Garros",       TournamentTier.GRAND_SLAM,  Surface.CLAY,         128, 2_000_000, 23, Sport.TENNIS));
+    schedule.add(new Tournament("Queen's Club",        TournamentTier.ATP_500,     Surface.GRASS,         48,   500_000, 25, Sport.TENNIS));
+    schedule.add(new Tournament("Wimbledon",           TournamentTier.GRAND_SLAM,  Surface.GRASS,        128, 2_000_000, 27, Sport.TENNIS));
+    schedule.add(new Tournament("US Open Series",      TournamentTier.MASTERS_1000,Surface.HARD,          64, 1_000_000, 33, Sport.TENNIS));
+    schedule.add(new Tournament("US Open",             TournamentTier.GRAND_SLAM,  Surface.HARD,         128, 2_000_000, 35, Sport.TENNIS));
+    schedule.add(new Tournament("Shanghai Masters",    TournamentTier.MASTERS_1000,Surface.HARD,          96, 1_000_000, 41, Sport.TENNIS));
+    schedule.add(new Tournament("Paris Masters",       TournamentTier.MASTERS_1000,Surface.INDOOR_HARD,   64, 1_000_000, 46, Sport.TENNIS));
+    schedule.add(new Tournament("Year-End Finals",     TournamentTier.MASTERS_1000,Surface.INDOOR_HARD,    8, 1_500_000, 49, Sport.TENNIS));
+  }
+}
+
+class BasketballCalendarBuilder implements SportCalendarBuilder {
+  void buildSchedule(ArrayList<Tournament> schedule) {
+    String[] teams={"Lakers","Warriors","Celtics","Heat","Bucks","Suns","Nuggets","Clippers","Spurs","76ers","Knicks","Bulls","Thunder","Nets","Pistons"};
+    for (int w=2;w<=34;w+=2) schedule.add(new Tournament("vs. "+teams[(int)random(teams.length)],TournamentTier.ATP_250,Surface.INDOOR_HARD,2,50000,w,Sport.BASKETBALL));
+    schedule.add(new Tournament("Playoff Round 1",    TournamentTier.ATP_500,      Surface.INDOOR_HARD,2,200000,37,Sport.BASKETBALL));
+    schedule.add(new Tournament("Conference Semis",   TournamentTier.MASTERS_1000, Surface.INDOOR_HARD,2,500000,41,Sport.BASKETBALL));
+    schedule.add(new Tournament("Conference Finals",   TournamentTier.MASTERS_1000, Surface.INDOOR_HARD,2,750000,45,Sport.BASKETBALL));
+    schedule.add(new Tournament("NBA Finals",          TournamentTier.GRAND_SLAM,   Surface.INDOOR_HARD,2,2000000,49,Sport.BASKETBALL));
+  }
+}
+
+class SoccerCalendarBuilder implements SportCalendarBuilder {
+  void buildSchedule(ArrayList<Tournament> schedule) {
+    String[] premTeams = {"Man City","Arsenal","Chelsea","Liverpool","Tottenham","Man Utd","Newcastle","Aston Villa","Brighton","Wolves"};
+    String[] euTeams   = {"Real Madrid","Barcelona","PSG","Bayern Munich","Juventus","AC Milan","Dortmund","Ajax"};
+    // Premier League matches (every week 2-39)
+    for (int w=2;w<=39;w++) schedule.add(new Tournament("vs. "+premTeams[(int)random(premTeams.length)],TournamentTier.ATP_250,Surface.GRASS,2,100000,w,Sport.SOCCER));
+    // FA Cup Final
+    schedule.add(new Tournament("FA Cup Final",TournamentTier.GRAND_SLAM,Surface.GRASS,2,800000,41,Sport.SOCCER));
+    // Champions League knockout rounds
+    schedule.add(new Tournament("vs. "+euTeams[(int)random(euTeams.length)]+" (UCL R16)",TournamentTier.MASTERS_1000,Surface.GRASS,2,1200000,43,Sport.SOCCER));
+    schedule.add(new Tournament("vs. "+euTeams[(int)random(euTeams.length)]+" (UCL QF)",TournamentTier.MASTERS_1000,Surface.GRASS,2,2000000,46,Sport.SOCCER));
+    schedule.add(new Tournament("Champions League Final",TournamentTier.GRAND_SLAM,Surface.GRASS,2,5000000,51,Sport.SOCCER));
+  }
+}
+
+class GolfCalendarBuilder implements SportCalendarBuilder {
+  void buildSchedule(ArrayList<Tournament> schedule) {
+    schedule.add(new Tournament("The Masters",             TournamentTier.GRAND_SLAM,   Surface.GRASS, 96, 3000000, 14, Sport.GOLF));
+    schedule.add(new Tournament("PGA Championship",        TournamentTier.GRAND_SLAM,   Surface.HARD,  96, 2500000, 19, Sport.GOLF));
+    schedule.add(new Tournament("US Open",                 TournamentTier.GRAND_SLAM,   Surface.HARD,  96, 2500000, 23, Sport.GOLF));
+    schedule.add(new Tournament("The Open Championship",   TournamentTier.GRAND_SLAM,   Surface.GRASS, 96, 2500000, 29, Sport.GOLF));
+    schedule.add(new Tournament("The Players Championship",TournamentTier.MASTERS_1000, Surface.GRASS, 96, 2000000, 11, Sport.GOLF));
+    schedule.add(new Tournament("Tour Championship",       TournamentTier.MASTERS_1000, Surface.GRASS, 30, 1500000, 38, Sport.GOLF));
+  }
+}
+
+class BoxingCalendarBuilder implements SportCalendarBuilder {
+  void buildSchedule(ArrayList<Tournament> schedule) {
+    schedule.add(new Tournament("Title Defense",        TournamentTier.GRAND_SLAM,   Surface.HARD, 2, 5000000,  8, Sport.BOXING));
+    schedule.add(new Tournament("Mandatory Defense",    TournamentTier.MASTERS_1000, Surface.HARD, 2, 2000000, 20, Sport.BOXING));
+    schedule.add(new Tournament("Unification Bout",     TournamentTier.GRAND_SLAM,   Surface.HARD, 2, 8000000, 32, Sport.BOXING));
+    schedule.add(new Tournament("Tune-Up Fight",        TournamentTier.ATP_250,      Surface.HARD, 2,  500000,  4, Sport.BOXING));
+    schedule.add(new Tournament("Contender Fight",      TournamentTier.ATP_250,      Surface.HARD, 2,  800000, 14, Sport.BOXING));
+    schedule.add(new Tournament("Main Event",           TournamentTier.ATP_500,      Surface.HARD, 2, 1500000, 26, Sport.BOXING));
+    schedule.add(new Tournament("Year-End Spectacular", TournamentTier.MASTERS_1000, Surface.HARD, 2, 3000000, 44, Sport.BOXING));
+  }
+}
+
+// ============================================================
+// TOURNAMENT CALENDAR
+// ============================================================
+class TournamentCalendar {
+  ArrayList<Tournament> schedule = new ArrayList<Tournament>();
+  Sport sport;
+
+  TournamentCalendar(Sport sport) { this.sport = sport; buildSchedule(sport); }
+
+  // OOP: Strategy pattern — delegate schedule building to sport-specific builder
+  void buildSchedule(Sport s) {
+    schedule.clear();
+    SportCalendarBuilder builder; // OOP: Strategy pattern
+    switch (s) {
+      case BASKETBALL: builder = new BasketballCalendarBuilder(); break;
+      case SOCCER:     builder = new SoccerCalendarBuilder();     break;
+      case GOLF:       builder = new GolfCalendarBuilder();       break;
+      case BOXING:     builder = new BoxingCalendarBuilder();     break;
+      default:         builder = new TennisCalendarBuilder();     break;
+    }
+    builder.buildSchedule(schedule); // OOP: Polymorphism
+  }
+
+  void add(String name, TournamentTier tier, Surface surf, int draw, float prize, int week, String venueLabel) {
+    Tournament t = new Tournament(name, tier, surf, draw, prize, week);
+    t.venueLabel = venueLabel;
+    t.sport = sport;
+    schedule.add(t);
+  }
+
+  Tournament getTournamentForWeek(int week) {
+    for (Tournament t : schedule) {
+      if (t.week == week) return t;
+    }
+    return null;
+  }
+
+  ArrayList<Tournament> getGrandSlams() {
+    ArrayList<Tournament> gs = new ArrayList<Tournament>();
+    for (Tournament t : schedule) if (t.tier == TournamentTier.GRAND_SLAM) gs.add(t);
+    return gs;
+  }
+}
+
+// ============================================================
+// TRAINING
+// ============================================================
+class TrainingSession {
+  String type;
+  float  intensity;
+  TrainingSession(String t, float i) { type = t; intensity = i; }
+
+  TrainingOutcome projectedGains() {
+    TrainingOutcome o = new TrainingOutcome();
+    float base = intensity * 0.02;
+    switch (type) {
+      case "SERVE":    o.serveGain    = (int)(base * 2); break;
+      case "FITNESS":  o.staminaGain  = (int)(base * 2); o.speedGain = (int)base; break;
+      case "MENTAL":   o.mentalGain   = (int)(base * 2); break;
+      case "TACTICAL": o.forehandGain = (int) base;       o.backhandGain = (int) base; break;
+    }
+    o.fatigueAdded = intensity * 0.3;
+    return o;
+  }
+}
+
+class TrainingOutcome {
+  int   serveGain    = 0, forehandGain = 0, backhandGain = 0;
+  int   speedGain    = 0, staminaGain  = 0, mentalGain   = 0;
+  float fatigueAdded = 0;
+  boolean injuryOccurred = false;
+}
+
+
+// ============================================================
+// Screens.pde
+// ============================================================
+
+/**
+ * Screens — All game screens except LifeScreen and MainMenuScreen.
+ * OOP role: Inheritance (all extend BaseScreen), Polymorphism (each overrides getScreenTitle)
+ * Collaborators: BaseScreen, UITheme, GameEngine, Player
+ */
+
+// ============================================================
+// CAREER SCREEN  —  legacy career hub view
+// @deprecated  Use LifeScreen for the primary career loop.
+// ============================================================
+/**
+ * CareerScreen — Legacy career hub displaying player stats, calendar, and events.
+ * OOP role: Inheritance (extends BaseScreen)
+ * Collaborators: GameEngine, UITheme, Player
+ */
+class CareerScreen extends BaseScreen { // OOP: Inheritance — extends BaseScreen
+  // CARD_PAD and SECTION_GAP inherited from BaseScreen
+
+  final float LEFT_COL  =  20;
+  final float MID_COL   = 320;
+  final float RIGHT_COL = 780;
+  final float TOP_Y     =  62;
+
+  boolean hoverAdvance = false;
+
+  String toastText  = "";
+  float  toastAlpha = 0;
+
+  // @deprecated  This screen is superseded by LifeScreen.
+  CareerScreen(GameEngine e) { super(e); }
+
+  /** OOP: Polymorphism — identifies this screen for headers and navigation. */
+  String getScreenTitle() { return "CAREER"; } // OOP: Polymorphism
+
+  void onEnter() {}
+
+  void render() {
+    Player p = engine.state.player;
+    if (p == null) return;
+
+    background(theme.BG);
+
+    if (engine.ai.hasNewEvent && engine.state.pendingEvent == null) {
+      engine.state.pendingEvent = engine.ai.pendingEvent;
+      engine.ai.hasNewEvent     = false;
+    }
+
+    drawLeftColumn(p);
+    drawMiddleColumn(p);
+    drawRightColumn(p);
+    drawToast();
+  }
+
+  void drawLeftColumn(Player p) {
+    float x = LEFT_COL, y = TOP_Y;
+    theme.drawCard(x, y, 285, 340);
+
+    fill(theme.TEXT);
+    textSize(20);
+    textAlign(LEFT, TOP);
+    text(p.name, x + 16, y + 14);
+
+    fill(theme.TEXT_DIM);
+    textSize(11);
+    String sideTerm = (engine.state.currentSport == Sport.SOCCER) ? "foot" : "hand";
+    text(p.nationality + " - " + p.dominantHand + " " + sideTerm, x + 16, y + 40);
+
+    fill(theme.ACCENT);
+    textSize(11);
+    text(p.playStyle.toString().replace("_", " "), x + 16, y + 56);
+
+    CareerPhase phase = p.currentPhase(engine.state.currentYear);
+    color phaseCol = phaseColor(phase);
+    fill(phaseCol, 40);
+    rect(x + 16, y + 72, 120, 20, 10);
+    fill(phaseCol);
+    textSize(10);
+    textAlign(CENTER, CENTER);
+    text(phase.toString(), x + 76, y + 82);
+
+    y += 104;
+    PlayerAttributes eff = p.effectiveAttributes();
+    SportConfig sc = engine.state.sportConfig != null ? engine.state.sportConfig : getSportConfig(Sport.TENNIS);
+    String[] statNames = sc.statNames;
+    int[]    statVals  = {eff.serve, eff.forehand, eff.backhand, eff.volley, eff.speed, eff.stamina, eff.mental};
+    color[]  statCols  = {theme.ACCENT, theme.ACCENT2, theme.ACCENT2, theme.SUCCESS, theme.SUCCESS, theme.SUCCESS, theme.DANGER};
+
+    for (int i = 0; i < statNames.length; i++) {
+      fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, CENTER);
+      text(statNames[i], x + 16, y + 8);
+      fill(theme.TEXT); textAlign(RIGHT, CENTER);
+      text(statVals[i], x + 260, y + 8);
+      theme.drawStatBar(x + 16, y + 16, 253, 6, statVals[i], 99, statCols[i]);
+      y += 32;
+    }
+
+    y += 8;
+    fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, CENTER);
+    text("FATIGUE", LEFT_COL + 16, y);
+    fill(p.form.fatigue > 70 ? theme.DANGER : theme.TEXT_DIM);
+    textAlign(RIGHT, CENTER);
+    text((int)p.form.fatigue + "%", LEFT_COL + 260, y);
+    theme.drawStatBar(LEFT_COL + 16, y + 8, 253, 6, p.form.fatigue, 100,
+                      p.form.fatigue > 70 ? theme.DANGER : theme.ACCENT2);
+
+    y += 24;
+    fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, CENTER);
+    text("CONFIDENCE", LEFT_COL + 16, y);
+    fill(theme.TEXT); textAlign(RIGHT, CENTER);
+    text((int)p.form.confidence + "%", LEFT_COL + 260, y);
+    theme.drawStatBar(LEFT_COL + 16, y + 8, 253, 6, p.form.confidence, 100, theme.SUCCESS);
+
+    if (p.health.status != InjuryStatus.HEALTHY) {
+      y += 28;
+      fill(theme.DANGER, 40);
+      rect(LEFT_COL + 16, y, 250, 22, 4);
+      fill(theme.DANGER); textSize(11); textAlign(CENTER, CENTER);
+      text("! " + p.health.injuredPart + " - " + p.health.weeksRemaining + " wks",
+           LEFT_COL + 141, y + 11);
+    }
+  }
+
+  void drawMiddleColumn(Player p) {
+    float x = MID_COL, y = TOP_Y;
+    theme.drawCard(x, y, 440, 120);
+
+    float[] vals = {
+      p.career.worldRanking,
+      p.career.rankingPoints,
+      p.career.titlesWon,
+      p.career.grandSlamTitles,
+      p.career.weeksAtNumberOne,
+      p.career.prizeMoney / 1000
+    };
+    SportConfig sc2 = engine.state.sportConfig != null ? engine.state.sportConfig : getSportConfig(Sport.TENNIS);
+    String[] lbls = {sc2.rankLabel, sc2.ptsLabel, sc2.titlesLabel, sc2.majorLabel, "WKS #1", "PRIZE ($K)"};
+
+    for (int i = 0; i < 3; i++) {
+      float cx = x + 16 + i * 140;
+      fill(theme.ACCENT);
+      textSize(24);
+      textAlign(LEFT, TOP);
+      text(i == 0 ? "#" + (int)vals[i] : (int)vals[i] + "", cx, y + 16);
+      fill(theme.TEXT_DIM);
+      textSize(10);
+      text(lbls[i], cx, y + 50);
+    }
+    for (int i = 3; i < 6; i++) {
+      float cx = x + 16 + (i - 3) * 140;
+      fill(theme.TEXT);
+      textSize(20);
+      textAlign(LEFT, TOP);
+      text(i == 5 ? formatMoney(p.career.prizeMoney) : (int)vals[i] + "", cx, y + 66);
+      fill(theme.TEXT_DIM);
+      textSize(10);
+      text(lbls[i], cx, y + 92);
+    }
+
+    y += 132;
+
+    if (engine.ai.isLoading) {
+      // Animated loading card
+      theme.drawCard(x, y, 440, 80, true);
+      float dotPhase = (frameCount * 0.08f) % (TWO_PI);
+      for (int d = 0; d < 3; d++) {
+        float dotAlpha = 128 + 127 * sin(dotPhase - d * 0.8);
+        fill(255, 210, 60, dotAlpha); noStroke();
+        ellipse(x + 220 - 20 + d*20, y+44, 10, 10);
+      }
+      fill(theme.TEXT_DIM); textSize(11); textAlign(CENTER, TOP);
+      text("AI IS WRITING YOUR STORY...", x + 220, y+14);
+    } else if (engine.state.pendingEvent != null) {
+      drawEventPanel(engine.state.pendingEvent, x, y, 440);
+    } else {
+      theme.drawCard(x, y, 440, 80);
+      fill(theme.TEXT_DIM); textSize(12); textAlign(LEFT, CENTER);
+      if (!engine.state.lastEvent.isEmpty()) text(engine.state.lastEvent, x + 16, y + 40);
+      else                                   text("Press SPACE to advance one week", x + 16, y + 40);
+    }
+
+    y += 340;
+
+    if (!p.career.recentResults.isEmpty()) {
+      sectionHeader("RECENT RESULTS", x, y);
+      y += 16;
+      int shown = min(4, p.career.recentResults.size());
+      for (int i = 0; i < shown; i++) {
+        MatchResult r = p.career.recentResults.get(i);
+        drawResultRow(r, x, y, 440);
+        y += 36;
+      }
+    }
+  }
+
+  void drawResultRow(MatchResult r, float x, float y, float w) {
+    fill(r.playerWon ? color(20, 45, 25) : color(45, 20, 20));
+    rect(x, y, w, 32, 4);
+    fill(r.playerWon ? theme.SUCCESS : theme.DANGER);
+    textSize(11); textAlign(LEFT, CENTER);
+    text(r.playerWon ? "W" : "L", x + 12, y + 16);
+    fill(theme.TEXT); textAlign(LEFT, CENTER);
+    text(r.tournamentName + " " + r.round, x + 30, y + 16);
+    fill(theme.TEXT_DIM); textAlign(RIGHT, CENTER);
+    text(r.score + " +" + r.rankingPointsAwarded + "pts", x + w - 12, y + 16);
+  }
+
+  void drawRightColumn(Player p) {
+    float x = RIGHT_COL, y = TOP_Y;
+    hoverAdvance = theme.isHover(hoverX, hoverY, x, y, 380, 56);
+    fill(hoverAdvance ? theme.ACCENT : color(30, 38, 22));
+    stroke(theme.ACCENT);
+    strokeWeight(hoverAdvance ? 2 : 1);
+    rect(x, y, 380, 56, 6);
+    noStroke();
+    fill(hoverAdvance ? theme.BG : theme.ACCENT);
+    textSize(15);
+    textAlign(CENTER, CENTER);
+    text("ADVANCE WEEK [SPACE]", x + 190, y + 28);
+
+    y += 70;
+    theme.drawCard(x, y, 380, 260);
+    fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, TOP);
+    text("SEASON CALENDAR", x + 16, y + 14);
+
+    float cy = y + 30;
+    int week = 0;
+    ArrayList<Tournament> all = engine.calendar.schedule;
+    int shown = 0;
+    for (Tournament t : all) {
+      if (shown >= 7) break;
+      boolean isCurrent = t.week == week;
+      if (t.week >= week || shown == 0) {
+        drawCalendarRow(t, x + 12, cy, 356, isCurrent);
+        cy += 34;
+        shown++;
+      }
+    }
+
+    y += 274;
+    sectionHeader("CAREER LOG", x, y);
+    y += 16;
+    fill(theme.TEXT_DIM); textSize(11); textAlign(LEFT, TOP);
+    ArrayList<String> hist = p.career.careerHistory;
+    int start = max(0, hist.size() - 6);
+    for (int i = start; i < hist.size(); i++) {
+      text("- " + hist.get(i), x, y);
+      y += 18;
+    }
+  }
+
+  void drawCalendarRow(Tournament t, float x, float y, float w, boolean current) {
+    if (current) {
+      fill(theme.ACCENT, 30);
+      rect(x, y, w, 30, 3);
+    }
+    color tierCol = tierColor(t.tier);
+    fill(tierCol);
+    ellipse(x + 12, y + 15, 8, 8);
+
+    fill(current ? theme.ACCENT : theme.TEXT_DIM);
+    textSize(10); textAlign(LEFT, CENTER);
+    text("W" + t.week, x + 24, y + 15);
+
+    fill(current ? theme.ACCENT : theme.TEXT);
+    textSize(12); textAlign(LEFT, CENTER);
+    text(t.name, x + 50, y + 15);
+
+    // Tier label badge (sport-appropriate text)
+    String tLabel = tierLabel(t.tier, engine.state.currentSport);
+    fill(tierCol, 40);
+    rect(x + w - 140, y + 6, 62, 18, 9);
+    fill(tierCol);
+    textSize(8); textAlign(CENTER, CENTER);
+    text(tLabel, x + w - 109, y + 15);
+
+    String vLabel = !t.venueLabel.isEmpty() ? t.venueLabel : calVenueLabel(t.surface, t.sport);
+    fill(surfaceColor(t.surface), 60);
+    rect(x + w - 70, y + 6, 62, 18, 9);
+    fill(surfaceColor(t.surface));
+    textSize(9); textAlign(CENTER, CENTER);
+    text(vLabel, x + w - 39, y + 15);
+  }
+
+  color phaseColor(CareerPhase p) {
+    switch (p) {
+      case JUNIOR:    return color(100, 160, 255);
+      case RISING:    return color( 80, 220, 120);
+      case PRIME:     return color(220, 160,  40);
+      case VETERAN:   return color(200, 100,  60);
+      case DECLINING: return color(160,  80,  80);
+      default:        return theme.TEXT_DIM;
+    }
+  }
+
+  color tierColor(TournamentTier t) {
+    switch (t) {
+      case GRAND_SLAM:   return color(220, 160,  40);
+      case MASTERS_1000: return color(180,  80, 220);
+      case ATP_500:      return color( 60, 140, 220);
+      case ATP_250:      return color( 60, 180, 120);
+      default:           return theme.TEXT_DIM;
+    }
+  }
+
+  String tierLabel(TournamentTier t, Sport s) {
+    switch (s) {
+      case BASKETBALL:
+        switch (t) {
+          case GRAND_SLAM:   return "FINALS";
+          case MASTERS_1000: return "PLAYOFF";
+          case ATP_500:      return "CONF";
+          case ATP_250:      return "REGULAR";
+          default:           return "GAME";
+        }
+      case SOCCER:
+        switch (t) {
+          case GRAND_SLAM:   return "CUP";
+          case MASTERS_1000: return "CHAMPION";
+          case ATP_500:      return "LEAGUE";
+          case ATP_250:      return "MATCH";
+          default:           return "GAME";
+        }
+      case GOLF:
+        switch (t) {
+          case GRAND_SLAM:   return "MAJOR";
+          case MASTERS_1000: return "PREMIER";
+          case ATP_500:      return "INVIT.";
+          case ATP_250:      return "TOUR";
+          default:           return "EVENT";
+        }
+      case BOXING:
+        switch (t) {
+          case GRAND_SLAM:   return "TITLE";
+          case MASTERS_1000: return "DEFENSE";
+          case ATP_500:      return "MAIN";
+          case ATP_250:      return "FIGHT";
+          default:           return "BOUT";
+        }
+      default: // TENNIS
+        switch (t) {
+          case GRAND_SLAM:   return "SLAM";
+          case MASTERS_1000: return "MASTERS";
+          case ATP_500:      return "ATP500";
+          case ATP_250:      return "ATP250";
+          default:           return "CHALL";
+        }
+    }
+  }
+
+  color surfaceColor(Surface s) {
+    switch (s) {
+      case CLAY:        return color(200, 100,  60);
+      case GRASS:       return color( 60, 160,  80);
+      case INDOOR_HARD: return color(100, 100, 200);
+      default:          return color(100, 140, 200);
+    }
+  }
+
+  String calVenueLabel(Surface s, Sport sport) {
+    switch (sport) {
+      case BASKETBALL: return "ARENA";
+      case SOCCER:     return "PITCH";
+      case GOLF:       return s == Surface.GRASS ? "LINKS" : "COURSE";
+      case BOXING:     return "RING";
+      default:         return s.toString().replace("_", " ");
+    }
+  }
+
+  void drawToast() {
+    if (toastAlpha > 0) {
+      toastAlpha -= 3;
+      fill(theme.PANEL, toastAlpha);
+      stroke(theme.ACCENT, toastAlpha);
+      strokeWeight(1);
+      rect(width / 2 - 200, height - 80, 400, 44, 6);
+      noStroke();
+      fill(theme.TEXT, toastAlpha);
+      textSize(13); textAlign(CENTER, CENTER);
+      text(toastText, width / 2, height - 58);
+    }
+  }
+
+  void showToast(String msg) {
+    toastText  = msg;
+    toastAlpha = 255;
+  }
+
+  void onClick(int mx, int my) {
+    if (theme.isHover(mx, my, RIGHT_COL, TOP_Y, 380, 56)) {
+      engine.ageUp();
+      return;
+    }
+    if (engine.state.pendingEvent != null && engine.state.pendingEvent.choices != null) {
+      ArrayList<EventChoice> choices = engine.state.pendingEvent.choices;
+      float ex = MID_COL, ey = TOP_Y + 132 + 138;
+      for (int i = 0; i < choices.size(); i++) {
+        if (theme.isHover(mx, my, ex + 14, ey, 412, 52)) {
+          engine.applyChoice(choices.get(i));
+          showToast("Choice made: " + choices.get(i).label);
+          return;
+        }
+        ey += 62;
+      }
+    }
+  }
+
+  void onHover(int mx, int my) { super.onHover(mx, my); }
+}
+
+// ============================================================
+// LEGACY SCREEN  —  career retrospective and HOF assessment
+// ============================================================
+/**
+ * LegacyScreen — Displays career stats, rivals, family, and AI-generated legacy narrative.
+ * OOP role: Inheritance (extends BaseScreen)
+ * Collaborators: GameEngine, UITheme, Player
+ */
+class LegacyScreen extends BaseScreen { // OOP: Inheritance — extends BaseScreen
+  // CARD_PAD and SECTION_GAP inherited from BaseScreen
+
   String  narrative = "";
   boolean generated = false;
   boolean hoverGen  = false;
 
   LegacyScreen(GameEngine e) { super(e); }
+
+  /** OOP: Polymorphism — identifies this screen for headers and navigation. */
+  String getScreenTitle() { return "LEGACY"; } // OOP: Polymorphism
 
   void onEnter() {
     if (!generated && engine.state.player != null) {
@@ -2317,6 +7206,7 @@ class LegacyScreen extends BaseScreen {
   }
 
   void render() {
+    renderScreenHeader(); // OOP: Inheritance — calls getScreenTitle() polymorphically
     Player p = engine.state.player;
     if (p == null) return;
 
@@ -2341,7 +7231,7 @@ class LegacyScreen extends BaseScreen {
     // Career stats card
     theme.drawCard(x, y, 500, 180);
     int proYears = engine.state.proCareerStartYear > 0 ? engine.state.currentYear - engine.state.proCareerStartYear : 0;
-    drawLegacyStat("Grand Slams",  p.career.grandSlamTitles + "",    x +  20, y + 20);
+    drawLegacyStat(getSportConfig(engine.state.currentSport).majorLabel,  p.career.grandSlamTitles + "",    x +  20, y + 20);
     drawLegacyStat("Total Titles", p.career.titlesWon + "",          x + 180, y + 20);
     drawLegacyStat("Best Ranking", "#" + p.career.worldRanking,      x + 340, y + 20);
     drawLegacyStat("Prize Money",  formatMoney(p.career.prizeMoney), x +  20, y + 80);
@@ -2486,1230 +7376,28 @@ class LegacyScreen extends BaseScreen {
     }
   }
 }
+
 // ============================================================
-// LIFE SCREEN  —  BitLife-style main gameplay view
+// LIFESTYLE SCREEN  —  finances, relationships, social media
 // ============================================================
-class LifeScreen extends BaseScreen {
+/**
+ * LifestyleScreen — Multi-tab view for player's off-court life including finances,
+ *                   mental health, relationships, social media, and legal status.
+ * OOP role: Inheritance (extends BaseScreen)
+ * Collaborators: GameEngine, UITheme, Player
+ */
+class LifestyleScreen extends BaseScreen { // OOP: Inheritance — extends BaseScreen
+  // CARD_PAD and SECTION_GAP inherited from BaseScreen
 
-  ActivityCategory selectedCategory = null;
-  boolean hoverAgeUp = false;
-
-  // Layout constants
-  final float LP_X = 12,  LP_W = 285;
-  final float MP_X = 290, MP_W = 520;
-  final float RP_X = 820, RP_W = 368;
-  final float PY   = 60,  PH   = 710;
-
-  // Track event panel top so click detection always matches render
-  float eventPanelY = -1;
-
-  LifeScreen(GameEngine e) { super(e); }
-
-  // ── Phase-aware category labels ───────────────────────────
-  String[] getCatLabels() {
-    LifePhase ph = engine.state.lifePhase;
-    if (ph == LifePhase.CHILDHOOD)    return new String[]{"PLAY","LEARN","FAMILY","HEALTH","POCKET $","SOCIAL"};
-    if (ph == LifePhase.EARLY_SCHOOL) return new String[]{"SPORT","STUDY","FAMILY","HEALTH","MONEY","SOCIAL"};
-    if (ph == LifePhase.TEEN)         return new String[]{"SPORT","STUDY","LOVE","HEALTH","MONEY","SOCIAL"};
-    if (ph == LifePhase.UNIVERSITY)   return new String[]{"SPORT","STUDY","LOVE","HEALTH","FINANCES","SOCIAL"};
-    return new String[]{"CAREER","TRAINING","LOVE & FAM","HEALTH","ASSETS","SOCIAL"};
-  }
-
-  String[][] getSubLabels() {
-    LifePhase ph = engine.state.lifePhase;
-    switch (ph) {
-      case CHILDHOOD:
-        return new String[][]{
-          {"Play Outside","Draw & Create","Watch Sports","Play Sport"},
-          {"Read Books","Do Homework","Explore Nature","Build Things"},
-          {"Family Time","Talk to Mom","Talk to Dad","Visit Family"},
-          {"Eat Healthy","Doctor Visit","Sleep Early","Rest Day"},
-          {"Save Allowance","Buy a Toy","Help at Home","Yard Sale"},
-          {"Make a Friend","Birthday Party","School Show","Join Club"}};
-      case EARLY_SCHOOL:
-        return new String[][]{
-          {"School Sports","Youth Training","Watch Pro Match","School Tournament"},
-          {"Study Hard","Library Time","Creative Project","Extra Tutoring"},
-          {"Hang with Friends","Call Parents","Family Dinner","Visit Family"},
-          {"Eat Healthy","Doctor Checkup","Physical Training","Rest Day"},
-          {"Do Chores","Save Up","Buy Equipment","Part-time Help"},
-          {"Post Clip Online","Local Event","Community Work","School Club"}};
-      case TEEN:
-        return new String[][]{
-          {"Youth Tournament","Approach Scout","Hire First Coach","Amateur Match"},
-          {"Intensive Drill","Light Practice","Mental Focus","Recovery Week"},
-          {"Go on a Date","Call Parents","Family Time","Date Together"},
-          {"Doctor Checkup","Start Therapy","Hit the Gym","Rest Day"},
-          {"Part-time Job","Buy Equipment","Save Up","First Investment"},
-          {"Post on Socials","Charity Work","Give Interview","Seek Sponsor"}};
-      case UNIVERSITY:
-        return new String[][]{
-          {"Collegiate Match","Approach Scout","Hire Coach","Study Film"},
-          {"Intensive Training","Light Practice","Mental Coaching","Recovery Week"},
-          {"Go on a Date","Call Parents","Family Dinner","Date Together"},
-          {"Doctor Checkup","Start Therapy","Hit the Gym","Spa Day"},
-          {"Part-time Job","Invest Savings","Apply Scholarship","Buy Equipment"},
-          {"Post on Socials","Charity Event","Give Interview","Seek Sponsor"}};
-      default: // PRO
-        return new String[][]{
-          {"Enter Tournament","Seek Sponsor","Hire Coach","Press Day"},
-          {"Intensive Training","Light Practice","Mental Coaching","Recovery Week"},
-          {"Go on a Date","Spend Time Together","Have a Child","Call Family"},
-          {"Doctor Checkup","Start Therapy","Hit the Gym","Spa Day"},
-          {"Buy Property","Invest Money","Buy a Car","Start Business"},
-          {"Post on Socials","Charity Event","Give Interview","Hire PR Manager"}};
-    }
-  }
-
-  String[][] getActionKeys() {
-    LifePhase ph = engine.state.lifePhase;
-    switch (ph) {
-      case CHILDHOOD:
-        return new String[][]{
-          {"play_outside","draw","watch_sport","play_sport"},
-          {"read","homework","explore","build"},
-          {"family_time","talk_mom","talk_dad","visit_family"},
-          {"eat_healthy","doctor_visit","sleep","rest"},
-          {"save_allowance","buy_toy","help_home","help_home"},
-          {"make_friend","make_friend","make_friend","join_club"}};
-      case EARLY_SCHOOL:
-        return new String[][]{
-          {"school_sports","youth_train","watch_pro","school_tourney"},
-          {"study_hard","library","creative","tutor"},
-          {"hangout","call_parents","family_dinner","family_time"},
-          {"eat_healthy","doctor_visit","phys_train","rest"},
-          {"chores","save_up","buy_equip","part_time_help"},
-          {"post_clip","local_event","community","school_club"}};
-      case TEEN:
-        return new String[][]{
-          {"youth_tourney","approach_scout","hire_first_coach","amateur_match"},
-          {"intensive","light","mental","recovery"},
-          {"date","call_parents","family_time","date_together"},
-          {"doctor","therapy","gym","rest"},
-          {"part_time_job","buy_equip","save_up","first_invest"},
-          {"post","charity","interview","sponsor"}};
-      case UNIVERSITY:
-        return new String[][]{
-          {"collegiate_match","approach_scout","hire_coach","study_film"},
-          {"intensive","light","mental","recovery"},
-          {"date","call_parents","family_dinner","date_together"},
-          {"doctor","therapy","gym","spa"},
-          {"part_time_job","invest","scholarship","buy_equip"},
-          {"post","charity","interview","sponsor"}};
-      default:
-        return new String[][]{
-          {"tournament","sponsor","coach","media"},
-          {"intensive","light","mental","recovery"},
-          {"date","propose","child","family"},
-          {"doctor","therapy","gym","spa"},
-          {"property","invest","car","business"},
-          {"post","charity","interview","pr"}};
-    }
-  }
-
-  // ── Main render ───────────────────────────────────────────
-  void render() {
-    Player p = engine.state.player;
-    if (p == null) return;
-
-    if (engine.ai.hasNewEvent && engine.state.pendingEvent == null) {
-      engine.state.pendingEvent = engine.ai.pendingEvent;
-      engine.ai.hasNewEvent     = false;
-    }
-
-    theme.drawDotGrid();
-    drawLeftPanel(p);
-    drawMiddlePanel(p);
-    drawRightPanel(p);
-    // Keyboard hints bar
-    fill(8, 12, 22, 200); noStroke();
-    rect(0, height - 26, width, 26);
-    fill(130, 140, 160); textSize(10); textAlign(LEFT, CENTER);
-    text("SPACE  Age Up    1/2/3  Pick Choice    L  Life    T  Training    W  World    ESC  Menu", 20, height - 13);
-  }
-
-  // ════════════════════════════════════════════════════════
-  // LEFT PANEL — vitals + relationships
-  // ════════════════════════════════════════════════════════
-  void drawLeftPanel(Player p) {
-    float x = LP_X, y = PY, w = LP_W;
-    // Week / year banner above the stats card
-    fill(255, 200, 55); textSize(11); textAlign(LEFT, TOP);
-    text("YEAR " + engine.state.currentYear + "  ·  WEEK " + engine.state.currentWeek + " / 52", MP_X, PY - 22);
-    float yearPct = engine.state.currentWeek / 52.0;
-    fill(30, 40, 60); noStroke(); rect(MP_X, PY - 10, MP_W, 5, 3);
-    fill(255, 210, 60, 120); rect(MP_X, PY - 10, MP_W * yearPct, 5, 3);
-    theme.drawCard(x, y, w, PH);
-
-    // ── Athlete identity card ─────────────────────────────
-    LifePhase phase = engine.state.lifePhase;
-    SportConfig sc  = engine.state.sportConfig != null ? engine.state.sportConfig : getSportConfig(Sport.TENNIS);
-
-    // Avatar circle with sport color
-    color sCol = theme.sportColor(engine.state.currentSport);
-    fill(sCol, 40); noStroke(); ellipse(x + LP_W/2, y + 46, 72, 72);
-    fill(sCol, 80); ellipse(x + LP_W/2, y + 46, 56, 56);
-    fill(sCol); textSize(26); textAlign(CENTER, CENTER);
-    text(engine.state.currentSport == Sport.BASKETBALL ? "🏀" :
-         engine.state.currentSport == Sport.SOCCER ? "⚽" :
-         engine.state.currentSport == Sport.GOLF ? "⛳" :
-         engine.state.currentSport == Sport.BOXING ? "🥊" : "🎾",
-         x + LP_W/2, y + 48);
-    // Name below avatar
-    fill(theme.TEXT); textSize(17); textAlign(CENTER, TOP);
-    text(p.name, x + LP_W/2, y + 80);
-    // Phase + age badge
-    int pAge = p.age(engine.state.currentYear);
-    fill(theme.TEXT_DIM); textSize(10); textAlign(CENTER, TOP);
-    text("Age " + pAge + "  ·  " + engine.state.currentSport.toString(), x + LP_W/2, y + 102);
-    // Nationality + hometown sub-line
-    if (!p.nationality.isEmpty()) {
-      fill(theme.TEXT_DIM); textSize(8); textAlign(CENTER, TOP);
-      String loc = p.nationality + (!p.hometown.isEmpty() ? "  ·  " + p.hometown : "");
-      text(loc, x + LP_W/2, y + 118);
-    }
-
-    // Rank strip (PRO only)
-    if (phase == LifePhase.PRO) {
-      fill(theme.ACCENT, 22); noStroke(); rect(x + 14, y + 132, w - 28, 14, 7);
-      fill(theme.ACCENT); textSize(8); textAlign(CENTER, CENTER);
-      text(sc.rankLabel + " #" + p.career.worldRanking, x + w/2, y + 139);
-    }
-
-    y += 152;
-
-    // ── Life vitals ───────────────────────────────────────
-    statBarIcon("❤", "HEALTH",    p.wellbeing, theme.DANGER,         x + 14, y, w - 28); y += 34;
-    statBarIcon("😊", "HAPPINESS", p.happiness, color(255, 210, 60), x + 14, y, w - 28); y += 34;
-    statBarIcon("🧠", "SMARTS",    p.smarts,    theme.ACCENT2,       x + 14, y, w - 28); y += 34;
-    statBarIcon("✨", "LOOKS",     p.looks,     theme.PURPLE,        x + 14, y, w - 28); y += 34;
-
-    // ENERGY bar (inverse of fatigue)
-    float energy = 100 - p.form.fatigue;
-    color energyCol = energy > 60 ? theme.SUCCESS : theme.DANGER;
-    statBarIcon("⚡", "ENERGY",    energy,      energyCol,           x + 14, y, w - 28);
-    y += 34;
-
-    stroke(theme.BORDER); strokeWeight(1);
-    line(x + 14, y + 2, x + w - 14, y + 2); noStroke();
-    y += 12;
-
-    // ── PRO career stats ──────────────────────────────────
-    if (phase == LifePhase.PRO) {
-      fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP);
-      text("TITLES", x + 14, y); text("GS", x + 80, y); text("PRIZE", x + 116, y);
-      y += 12;
-      fill(theme.ACCENT); textSize(18); textAlign(LEFT, TOP); text("" + p.career.titlesWon, x + 14, y);
-      fill(theme.TEXT);   textSize(18); text("" + p.career.grandSlamTitles, x + 80, y);
-      fill(theme.SUCCESS); textSize(12); text(formatMoney(p.career.prizeMoney), x + 116, y);
-      y += 28;
-
-      fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("SAVINGS", x + 14, y); y += 11;
-      fill(theme.GOLD); textSize(22); textAlign(LEFT, TOP);
-      text("$" + (int)(p.finances.savings / 1000) + "K", x + 14, y); y += 28;
-
-      // Mental health badge
-      color mc = p.mentalHealth.stateColor();
-      fill(mc, 35); rect(x + 14, y, w - 28, 20, 4);
-      fill(mc); textSize(8); textAlign(CENTER, CENTER);
-      text("MENTAL: " + p.mentalHealth.stateLabel().toUpperCase(), x + w/2, y + 10); y += 26;
-
-      // Injury badge
-      if (p.health.status != InjuryStatus.HEALTHY) {
-        fill(theme.DANGER, 35); rect(x + 14, y, w - 28, 20, 4);
-        fill(theme.DANGER); textSize(8); textAlign(CENTER, CENTER);
-        text("INJURY: " + p.health.injuredPart + " (" + p.health.weeksRemaining + "wk)", x + w/2, y + 10); y += 26;
-      }
-
-      stroke(theme.BORDER); strokeWeight(1);
-      line(x + 14, y + 2, x + w - 14, y + 2); noStroke();
-      y += 10;
-
-      // ── RELATIONSHIPS section ─────────────────────────
-      fill(theme.FAMILY); textSize(9); textAlign(LEFT, TOP);
-      text("RELATIONSHIPS", x + 14, y); y += 14;
-
-      if (p.family.spouse != null) {
-        // Partner card
-        color relCol = p.family.status == RelationshipStatus.MARRIED ? theme.FAMILY :
-                       (p.family.status == RelationshipStatus.ENGAGED ? theme.ACCENT : theme.ACCENT2);
-        fill(relCol, 25); rect(x + 14, y, w - 28, 52, 5);
-        fill(relCol); textSize(9); textAlign(LEFT, TOP);
-        String statusLabel = p.family.status == RelationshipStatus.MARRIED ? "MARRIED" :
-                             p.family.status == RelationshipStatus.ENGAGED  ? "ENGAGED" : "DATING";
-        text(statusLabel, x + 18, y + 5);
-        fill(theme.TEXT); textSize(11); text(p.family.partnerName(), x + 18, y + 18);
-        // Happiness bar
-        fill(theme.TEXT_DIM); textSize(8); text("HAPPINESS", x + 18, y + 34);
-        theme.drawStatBar(x + 80, y + 30, w - 94, 8,
-          p.family.familyHappiness, 100,
-          p.family.familyHappiness > 60 ? theme.SUCCESS : (p.family.familyHappiness > 30 ? theme.ACCENT : theme.DANGER));
-        // Resentment warning
-        if (p.family.spouse.resentment > 50) {
-          fill(theme.DANGER); textSize(7); textAlign(RIGHT, TOP);
-          text("⚠ " + (int)p.family.spouse.resentment + "% resentful", x + w - 18, y + 5);
-        }
-        y += 58;
-
-        // Kids
-        if (!p.family.children.isEmpty()) {
-          for (Child c : p.family.children) {
-            fill(theme.ACCENT2, 20); rect(x + 14, y, w - 28, 20, 4);
-            fill(theme.ACCENT2); textSize(8); textAlign(LEFT, CENTER);
-            text("♦ " + c.name + "  (age " + c.age + ")", x + 18, y + 10);
-            theme.drawStatBar(x + w - 60, y + 7, 42, 6, c.happiness, 100, theme.SUCCESS);
-            y += 24;
-          }
-        }
-      } else {
-        fill(theme.TEXT_DIM, 120); rect(x + 14, y, w - 28, 28, 5);
-        fill(theme.TEXT_DIM); textSize(9); textAlign(CENTER, CENTER);
-        text("Single — use LOVE & FAM to date", x + w/2, y + 14);
-        y += 32;
-      }
-
-      // ── Parents ───────────────────────────────────────
-      if (p.parents != null) {
-        stroke(theme.BORDER); strokeWeight(1);
-        line(x + 14, y + 4, x + w - 14, y + 4); noStroke(); y += 10;
-        fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("PARENTS", x + 14, y); y += 12;
-
-        for (int pi = 0; pi < 2; pi++) {
-          Parent pr = pi == 0 ? p.parents.mom : p.parents.dad;
-          String lbl = pi == 0 ? "Mom" : "Dad";
-          color rc = pr.relationshipColor();
-          fill(rc, 20); rect(x + 14, y, w - 28, 18, 4);
-          fill(rc); textSize(8); textAlign(LEFT, CENTER);
-          text(lbl + ": " + pr.name, x + 18, y + 9);
-          textAlign(RIGHT, CENTER);
-          text(pr.relationshipLabel(), x + w - 18, y + 9);
-          y += 22;
-        }
-      }
-
-    } else {
-      // ── EARLY LIFE stats ─────────────────────────────
-      fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("SAVINGS", x + 14, y); y += 11;
-      fill(theme.GOLD); textSize(22); textAlign(LEFT, TOP);
-      text("$" + (int)(p.finances.savings / 1000) + "K", x + 14, y); y += 28;
-
-      if (p.parents != null) {
-        fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("PARENTS", x + 14, y); y += 12;
-        for (int pi = 0; pi < 2; pi++) {
-          Parent pr = pi == 0 ? p.parents.mom : p.parents.dad;
-          String lbl = pi == 0 ? "Mom" : "Dad";
-          color rc = pr.relationshipColor();
-          fill(rc, 20); rect(x + 14, y, w - 28, 20, 4);
-          fill(rc); textSize(8); textAlign(LEFT, CENTER);
-          text(lbl + ": " + pr.name, x + 18, y + 10);
-          textAlign(RIGHT, CENTER); text(pr.relationshipLabel(), x + w - 18, y + 10);
-          y += 24;
-        }
-      }
-
-      if (p.family.spouse != null) {
-        y += 4;
-        fill(theme.FAMILY, 25); rect(x + 14, y, w - 28, 24, 5);
-        fill(theme.FAMILY); textSize(9); textAlign(CENTER, CENTER);
-        text("♥  " + p.family.statusDisplay(), x + w/2, y + 12); y += 28;
-      }
-    }
-
-    // ── Sport attributes (compact) ─────────────────────
-    stroke(theme.BORDER); strokeWeight(1);
-    line(x + 14, y + 4, x + w - 14, y + 4); noStroke(); y += 10;
-    fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("SPORT ATTRIBUTES", x + 14, y); y += 12;
-
-    PlayerAttributes eff = p.effectiveAttributes();
-    String[] sn = sc.statNames;
-    int[] sv = {eff.serve, eff.forehand, eff.backhand, eff.volley, eff.speed, eff.stamina, eff.mental};
-    // Per-stat accent colors: s1=GOLD, s2=ACCENT2, s3=TEAL, s4=PURPLE, s5=SUCCESS, s6=SUCCESS, s7=FAMILY
-    color[] statColors = {theme.GOLD, theme.ACCENT2, theme.TEAL, theme.PURPLE, theme.SUCCESS, theme.SUCCESS, theme.FAMILY};
-    for (int i = 0; i < min(sn.length, 7); i++) {
-      if (y > PY + PH - 18) break;
-      String statIcon = statEmoji(sn[i]);
-      color barCol = statColors[i];
-      // Icon LEFT
-      fill(barCol); textSize(9); textAlign(LEFT, CENTER);
-      text(statIcon, x + 14, y + 6);
-      // Name label
-      fill(theme.TEXT_DIM); textSize(7); textAlign(LEFT, TOP);
-      text(sn[i], x + 26, y);
-      // Value RIGHT
-      fill(barCol); textSize(8); textAlign(RIGHT, TOP);
-      text("" + sv[i], x + w - 14, y);
-      // Thick bar h=8
-      if (sv[i] > 75)
-        theme.drawGlowBar(x + 26, y + 11, w - 40, 8, sv[i], 99, barCol);
-      else
-        theme.drawStatBar(x + 26, y + 11, w - 40, 8, sv[i], 99, barCol);
-      y += 22;
-    }
-  }
-
-  String statEmoji(String statName) {
-    String s = statName.toUpperCase();
-    if (s.contains("SHOOT") || s.contains("SERVE") || s.contains("DRIV") || s.contains("JAB")) return "🎯";
-    if (s.contains("DRIB") || s.contains("FOREHAND") || s.contains("IRON") || s.contains("POWER")) return "⚡";
-    if (s.contains("DEFENSE") || s.contains("BACKHAND") || s.contains("CHIP")) return "🛡";
-    if (s.contains("REBOUND") || s.contains("VOLLEY") || s.contains("PUTT") || s.contains("FOOT")) return "🔄";
-    if (s.contains("SPEED") || s.contains("PACE") || s.contains("ATHLET")) return "💨";
-    if (s.contains("STAMINA") || s.contains("CHIN") || s.contains("PHYS")) return "❤";
-    if (s.contains("MENTAL") || s.contains("IQ") || s.contains("VISION") || s.contains("PASS")) return "🧠";
-    return "●";
-  }
-
-  String phaseLabel(LifePhase ph) {
-    switch (ph) {
-      case CHILDHOOD:   return "CHILDHOOD";
-      case EARLY_SCHOOL: return "SCHOOL";
-      case TEEN:        return "TEENAGER";
-      case UNIVERSITY:  return "UNIVERSITY";
-      default:          return "PRO";
-    }
-  }
-
-  void statBar(String label, float val, color col, float x, float y, float w) {
-    fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text(label, x, y);
-    fill(col); textAlign(RIGHT, TOP); text((int)val + "%", x + w, y);
-    theme.drawStatBar(x, y + 11, w, 10, val, 100, col);
-  }
-
-  // BitLife-style icon + label stat bar (thick, h=8, rounded feel)
-  void statBarIcon(String icon, String label, float val, color col, float x, float y, float w) {
-    // Icon
-    fill(col); textSize(11); textAlign(LEFT, CENTER);
-    text(icon, x, y + 7);
-    // Label
-    fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP);
-    text(label, x + 16, y);
-    // Value right
-    fill(col); textSize(9); textAlign(RIGHT, TOP);
-    text((int)val + "%", x + w, y);
-    // Thick bar with rounded ends (h=8)
-    theme.drawStatBar(x + 16, y + 11, w - 16, 8, val, 100, col);
-  }
-
-  // ════════════════════════════════════════════════════════
-  // MIDDLE PANEL — life feed / active event card
-  // ════════════════════════════════════════════════════════
-  void drawMiddlePanel(Player p) {
-    float x = MP_X, y = PY, w = MP_W;
-
-    // Youth/school special rendering
-    int playerAge = engine.state.player.age(engine.state.currentYear);
-    if (playerAge < 18 && engine.state.lifePhase != null) {
-      drawYouthPanel(engine.state.player, MP_X, PY, MP_W);
-      return; // Skip normal middle panel for youth
-    }
-
-
-    // AI loading bar at top
-    boolean isLoading = engine.ai.isLoading;
-    float eventY = y;
-    if (isLoading) {
-      // Animated loading card
-      theme.drawCard(x, eventY, w, 80, true);
-      float dotPhase = (frameCount * 0.08f) % (TWO_PI);
-      for (int d = 0; d < 3; d++) {
-        float dotAlpha = 128 + 127 * sin(dotPhase - d * 0.8);
-        fill(255, 210, 60, dotAlpha); noStroke();
-        ellipse(x + w/2 - 20 + d*20, eventY+44, 10, 10);
-      }
-      fill(theme.TEXT_DIM); textSize(11); textAlign(CENTER, TOP);
-      text("AI IS WRITING YOUR STORY...", x + w/2, eventY+14);
-      y += 86;
-    }
-
-    eventPanelY = y;  // save so onClick always uses the same origin
-
-    if (engine.state.pendingEvent != null) {
-      // Context header
-      fill(80, 100, 140); textSize(10); textAlign(LEFT, TOP);
-      text("▼  CHOOSE YOUR RESPONSE", x + 14, y - 18);
-      y += 14;
-      eventPanelY = y;
-      drawEventPanel(engine.state.pendingEvent, x, y, w);
-    } else {
-      // Context header (no pending event)
-      if (isLoading) {
-        fill(255, 210, 60); textSize(10); textAlign(LEFT, TOP);
-        text("● GENERATING YOUR STORY...", x + 14, y - 18);
-      } else {
-        fill(80, 100, 140); textSize(10); textAlign(LEFT, TOP);
-        text("▶  PRESS SPACE TO ADVANCE", x + 14, y - 18);
-      }
-      float cardH = PH - (isLoading ? 52 : 0);
-      theme.drawCard(x, y, w, cardH);
-
-      // Last event banner
-      if (!engine.state.lastEvent.isEmpty()) {
-        fill(theme.ACCENT, 22); noStroke(); rect(x + 10, y + 10, w - 20, 30, 4);
-        fill(theme.ACCENT); textSize(10); textAlign(LEFT, CENTER);
-        text("» " + engine.state.lastEvent, x + 20, y + 25);
-        y += 44;
-      } else { y += 10; }
-
-      // Life feed header
-      fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("LIFE FEED", x + 14, y + 6);
-      stroke(theme.BORDER); strokeWeight(1);
-      line(x + 14, y + 18, x + w - 14, y + 18); noStroke();
-      y += 24;
-
-      ArrayList<String> feed = p.lifeEvents;
-      if (feed.isEmpty()) {
-        fill(theme.TEXT_DIM); textSize(14); textAlign(CENTER, CENTER);
-        text("Your story begins here.", x + w/2, y + 90);
-        fill(theme.TEXT_DIM); textSize(10); textAlign(CENTER, CENTER);
-        text("Press SPACE or click AGE UP  ·  use activities on the right", x + w/2, y + 114);
-      } else {
-        float fy = y;
-        for (int i = 0; i < feed.size(); i++) {
-          if (fy > PY + PH - 22) break;
-          String entry = feed.get(i);
-          color dot = feedColor(entry);
-          if (i == 0) { fill(theme.PANEL_2); rect(x + 8, fy - 2, w - 16, 22, 3); }
-          fill(dot); noStroke(); ellipse(x + 20, fy + 9, 7, 7);
-          fill(i == 0 ? theme.TEXT : theme.TEXT_DIM);
-          textSize(i == 0 ? 10 : 9); textAlign(LEFT, TOP);
-          text(entry, x + 32, fy);
-          fy += (i == 0 ? 24 : 19);
-        }
-      }
-
-      // Recent results strip
-      if (engine.state.lifePhase == LifePhase.PRO && !p.career.recentResults.isEmpty()) {
-        float ry = PY + PH - 140;
-        stroke(theme.BORDER); line(x + 14, ry, x + w - 14, ry); noStroke();
-        ry += 8;
-        fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("RECENT RESULTS", x + 14, ry); ry += 14;
-        int shown = min(3, p.career.recentResults.size());
-        for (int i = 0; i < shown; i++) {
-          MatchResult r = p.career.recentResults.get(i);
-          fill(r.playerWon ? color(15, 45, 25) : color(45, 15, 15)); rect(x + 8, ry, w - 16, 26, 3);
-          fill(r.playerWon ? theme.SUCCESS : theme.DANGER); textSize(9); textAlign(LEFT, CENTER);
-          text(r.playerWon ? "W" : "L", x + 18, ry + 13);
-          fill(theme.TEXT); textAlign(LEFT, CENTER); text(r.tournamentName + " " + r.round, x + 34, ry + 13);
-          fill(theme.TEXT_DIM); textAlign(RIGHT, CENTER); text(r.score + " +" + r.rankingPointsAwarded + "pts", x + w - 14, ry + 13);
-          ry += 30;
-        }
-      }
-    }
-  }
-
-  // ════════════════════════════════════════════════════════
-  // YOUTH PANEL — banner + life feed for under-18 players
-  // ════════════════════════════════════════════════════════
-  void drawYouthPanel(Player p, float x, float startY, float w) {
-    int pAge = p.age(engine.state.currentYear);
-
-    // Phase banner
-    color phCol = pAge < 10 ? theme.TEAL : (pAge < 14 ? theme.ACCENT2 : theme.GOLD);
-    String phLabel = pAge < 6 ? "🧒 CHILDHOOD" : (pAge < 10 ? "⚽ YOUTH SPORTS" : (pAge < 14 ? "🏫 MIDDLE SCHOOL" : "🎓 HIGH SCHOOL VARSITY"));
-    fill(phCol); textSize(16); textAlign(LEFT, TOP);
-    text(phLabel, x, startY);
-    fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, TOP);
-    String rankStr = (p.career.juniorRanking > 0 && p.career.juniorRanking < 9999)
-      ? "#" + p.career.juniorRanking + " in " + p.career.ageGroup + " Division"
-      : "Unranked";
-    text(rankStr + "  •  " + p.career.currentOrg, x, startY + 22);
-
-    float adjustedY = startY + 44;
-
-    // College offers banner for 16+
-    if (pAge >= 16 && p.academic != null && !p.academic.offers.isEmpty()) {
-      theme.drawAccentCard(x, adjustedY, w, 50, theme.GOLD);
-      fill(theme.GOLD); textSize(13); textAlign(LEFT, CENTER);
-      text("🎓 " + p.academic.offers.size() + " COLLEGE OFFERS PENDING", x + 14, adjustedY + 25);
-      fill(theme.TEXT_DIM); textSize(10); textAlign(RIGHT, CENTER);
-      text("See Life tab for details →", x + w - 14, adjustedY + 25);
-      adjustedY += 58;
-    }
-
-    // Card background for the rest of the panel
-    float cardH = PH - (adjustedY - startY);
-    theme.drawCard(x, adjustedY, w, cardH);
-
-    // Last event banner
-    float fy = adjustedY + 10;
-    if (!engine.state.lastEvent.isEmpty()) {
-      fill(theme.ACCENT, 22); noStroke(); rect(x + 10, fy, w - 20, 30, 4);
-      fill(theme.ACCENT); textSize(10); textAlign(LEFT, CENTER);
-      text("» " + engine.state.lastEvent, x + 20, fy + 15);
-      fy += 38;
-    }
-
-    // Life feed header
-    fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("LIFE FEED", x + 14, fy + 6);
-    stroke(theme.BORDER); strokeWeight(1);
-    line(x + 14, fy + 18, x + w - 14, fy + 18); noStroke();
-    fy += 26;
-
-    ArrayList<String> feed = p.lifeEvents;
-    if (feed.isEmpty()) {
-      fill(theme.TEXT_DIM); textSize(14); textAlign(CENTER, CENTER);
-      text("Your story begins here.", x + w / 2, fy + 60);
-      fill(theme.TEXT_DIM); textSize(10); textAlign(CENTER, CENTER);
-      text("Press SPACE or click AGE UP  ·  use activities on the right", x + w / 2, fy + 84);
-    } else {
-      for (int i = 0; i < feed.size(); i++) {
-        if (fy > startY + PH - 22) break;
-        String entry = feed.get(i);
-        color dot = feedColor(entry);
-        if (i == 0) { fill(theme.PANEL_2); rect(x + 8, fy - 2, w - 16, 22, 3); }
-        fill(dot); noStroke(); ellipse(x + 20, fy + 9, 7, 7);
-        fill(i == 0 ? theme.TEXT : theme.TEXT_DIM);
-        textSize(i == 0 ? 10 : 9); textAlign(LEFT, TOP);
-        text(entry, x + 32, fy);
-        fy += (i == 0 ? 24 : 19);
-      }
-    }
-  }
-
-  color feedColor(String e) {
-    String s = e.toLowerCase();
-    if (s.contains("won") || s.contains("title") || s.contains("champion") || s.contains("graduated")) return theme.ACCENT;
-    if (s.contains("born") || s.contains("married") || s.contains("partner") || s.contains("dating") || s.contains("engaged") || s.contains("child") || s.contains("love")) return theme.FAMILY;
-    if (s.contains("injur") || s.contains("hospital") || s.contains("legal") || s.contains("charged")) return theme.DANGER;
-    if (s.contains("$") || s.contains("deal") || s.contains("invest") || s.contains("pts") || s.contains("money")) return theme.SUCCESS;
-    if (s.contains("mom") || s.contains("dad") || s.contains("parent") || s.contains("family")) return theme.FAMILY;
-    return theme.ACCENT2;
-  }
-
-  // ════════════════════════════════════════════════════════
-  // RIGHT PANEL — activity grid + Age Up
-  // ════════════════════════════════════════════════════════
-  void drawRightPanel(Player p) {
-    float x = RP_X, w = RP_W, y = PY;
-    theme.drawCard(x, y, w, PH);
-
-    // AGE UP button at bottom
-    float btnY = PY + PH - 62;
-    hoverAgeUp = theme.isHover(hoverX, hoverY, x + 10, btnY, w - 20, 50);
-    boolean eventPending = engine.state.pendingEvent != null;
-    if (eventPending) {
-      // Dimmed "make a choice first" state
-      fill(color(30, 30, 30)); stroke(theme.BORDER); strokeWeight(1);
-      rect(x + 10, btnY, w - 20, 50, 6); noStroke();
-      fill(color(100, 110, 130)); textSize(12); textAlign(CENTER, CENTER);
-      text("⬆ MAKE A CHOICE FIRST", x + w/2, btnY + 25);
-    } else {
-      // Pulsing glow when idle
-      float pulse = (sin(frameCount * 0.08f) + 1) * 0.5f;
-      color glowCol = lerpColor(color(20, 60, 20), color(60, 180, 60), pulse);
-      color btnFill = hoverAgeUp ? theme.ACCENT : glowCol;
-      float sw = hoverAgeUp ? 3 : 1 + pulse * 2;
-      fill(btnFill); stroke(theme.ACCENT); strokeWeight(sw);
-      rect(x + 10, btnY, w - 20, 50, 6); noStroke();
-      fill(hoverAgeUp ? color(10, 12, 22) : theme.ACCENT);
-      textSize(16); textAlign(CENTER, CENTER);
-      String btnLabel = engine.state.lifePhase == LifePhase.PRO ? "► AGE UP  [SPACE]" : "► NEXT YEAR  [SPACE]";
-      text(btnLabel, x + w/2, btnY + 25);
-    }
-    fill(theme.TEXT_DIM); textSize(8); textAlign(CENTER, TOP);
-    text(engine.state.currentYear + "  ·  Age " + p.age(engine.state.currentYear), x + w/2, btnY + 54);
-
-    // Activities header
-    fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP);
-    text("ACTIVITIES", x + 14, y + 12);
-    float ay = y + 28;
-
-    if (selectedCategory == null) drawActivityGrid(x + 10, ay, w - 20);
-    else                          drawSubMenu(x + 10, ay, w - 20);
-
-    // Overview mini-stats
-    float sumY = y + 28 + 248;
-    fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("OVERVIEW", x + 14, sumY); sumY += 12;
-    boolean isPro = engine.state.lifePhase == LifePhase.PRO;
-    float overviewH = isPro ? 78 : 78;
-    fill(theme.PANEL); stroke(theme.BORDER); strokeWeight(1); rect(x + 10, sumY, w - 20, overviewH, 4); noStroke(); sumY += 8;
-
-    // ── 3-stat summary row ────────
-    if (isPro) {
-      // Three big stats: RANKING  WEALTH  FAME/PTS
-      float colW = (w - 20) / 3f;
-      fill(color(215, 225, 245)); textSize(22); textAlign(CENTER, TOP);
-      text("#" + p.career.worldRanking, x + 10 + colW * 0.5f, sumY + 2);
-      fill(theme.TEXT_DIM); textSize(9); textAlign(CENTER, TOP);
-      text("RANKING", x + 10 + colW * 0.5f, sumY + 26);
-      stroke(theme.BORDER); strokeWeight(1);
-      line(x + 10 + colW, sumY + 4, x + 10 + colW, sumY + 38); noStroke();
-      fill(theme.GOLD); textSize(22); textAlign(CENTER, TOP);
-      text("$" + (int)(p.finances.savings / 1000) + "K", x + 10 + colW * 1.5f, sumY + 2);
-      fill(theme.TEXT_DIM); textSize(9); textAlign(CENTER, TOP);
-      text("WEALTH", x + 10 + colW * 1.5f, sumY + 26);
-      stroke(theme.BORDER); strokeWeight(1);
-      line(x + 10 + colW * 2, sumY + 4, x + 10 + colW * 2, sumY + 38); noStroke();
-      int fameStar = (int)(min(100, (p.socialMedia.followers / 10000000f) * 100));
-      fill(theme.ACCENT2); textSize(22); textAlign(CENTER, TOP);
-      text("★" + fameStar, x + 10 + colW * 2.5f, sumY + 2);
-      fill(theme.TEXT_DIM); textSize(9); textAlign(CENTER, TOP);
-      text("FAME", x + 10 + colW * 2.5f, sumY + 26);
-      // Energy + confidence sub-row
-      float eY = sumY + 44;
-      float rowEnergy = 100 - p.form.fatigue;
-      color eCol = rowEnergy > 60 ? theme.SUCCESS : theme.DANGER;
-      fill(theme.TEXT_DIM); textSize(7); textAlign(LEFT, TOP); text("ENERGY", x + 18, eY);
-      fill(eCol); textSize(7); textAlign(RIGHT, TOP); text((int)rowEnergy + "%", x + w/2 - 8, eY);
-      theme.drawStatBar(x + 18, eY + 10, w/2 - 28, 6, rowEnergy, 100, eCol);
-      fill(theme.TEXT_DIM); textSize(7); textAlign(LEFT, TOP); text("CONFID.", x + w/2 + 4, eY);
-      theme.drawStatBar(x + w/2 + 4, eY + 10, w/2 - 28, 6, p.form.confidence, 100, theme.SUCCESS);
-    } else {
-      float colW2 = (w - 20) / 3f;
-      fill(theme.ACCENT2); textSize(20); textAlign(CENTER, TOP);
-      text("" + (int)p.smarts, x + 10 + colW2 * 0.5f, sumY + 2);
-      fill(theme.TEXT_DIM); textSize(8); textAlign(CENTER, TOP);
-      text("SMARTS", x + 10 + colW2 * 0.5f, sumY + 26);
-      stroke(theme.BORDER); strokeWeight(1);
-      line(x + 10 + colW2, sumY + 4, x + 10 + colW2, sumY + 38); noStroke();
-      fill(theme.GOLD); textSize(20); textAlign(CENTER, TOP);
-      text("$" + (int)(p.finances.savings / 1000) + "K", x + 10 + colW2 * 1.5f, sumY + 2);
-      fill(theme.TEXT_DIM); textSize(8); textAlign(CENTER, TOP);
-      text("SAVINGS", x + 10 + colW2 * 1.5f, sumY + 26);
-      stroke(theme.BORDER); strokeWeight(1);
-      line(x + 10 + colW2 * 2, sumY + 4, x + 10 + colW2 * 2, sumY + 38); noStroke();
-      int relScore2 = p.family.spouse != null ? (int)p.family.familyHappiness :
-                      (p.parents != null ? (int)((p.parents.mom.relationship + p.parents.dad.relationship) / 2) : 0);
-      fill(theme.FAMILY); textSize(20); textAlign(CENTER, TOP);
-      text("" + relScore2, x + 10 + colW2 * 2.5f, sumY + 2);
-      fill(theme.TEXT_DIM); textSize(8); textAlign(CENTER, TOP);
-      text("FAMILY", x + 10 + colW2 * 2.5f, sumY + 26);
-      if (p.parents != null) {
-        fill(theme.TEXT_DIM); textSize(7); textAlign(CENTER, TOP);
-        text("Mom " + (int)p.parents.mom.relationship + " / Dad " + (int)p.parents.dad.relationship, x + w/2, sumY + 54);
-      }
-    }
-
-    // ── CHANGE 4: BitLife-style life event feed ────────────
-    float feedY = sumY + overviewH + 8;
-    float feedH = PY + PH - 62 - feedY - 6;
-    if (feedH > 30) {
-      fill(theme.PANEL_2); noStroke(); rect(x + 10, feedY, w - 20, feedH, 4);
-      fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("LIFE FEED", x + 18, feedY + 6);
-      stroke(theme.BORDER); strokeWeight(1);
-      line(x + 18, feedY + 18, x + w - 18, feedY + 18); noStroke();
-      float fy = feedY + 24;
-      ArrayList<String> feed = new ArrayList<String>();
-      ArrayList<String> hist = p.career.careerHistory;
-      for (int i = max(0, hist.size() - 6); i < hist.size(); i++) feed.add(hist.get(i));
-      if (feed.isEmpty()) {
-        for (int i = max(0, p.lifeEvents.size() - 6); i < p.lifeEvents.size(); i++) feed.add(p.lifeEvents.get(i));
-      }
-      for (int i = feed.size() - 1; i >= 0 && fy < feedY + feedH - 14; i--) {
-        String entry = feed.get(i);
-        color bullet = entry.contains("Won") || entry.contains("title") ? color(255, 210, 60) :
-                       entry.contains("injur") ? color(240, 70, 70) :
-                       entry.contains("partner") || entry.contains("married") || entry.contains("love") ? color(255, 100, 175) :
-                       entry.contains("college") || entry.contains("school") ? color(75, 165, 255) :
-                       color(60, 80, 120);
-        fill(bullet); noStroke(); ellipse(x + 20, fy + 6, 6, 6);
-        fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP);
-        String shortEntry = entry.length() > 44 ? entry.substring(0, 41) + "..." : entry;
-        text(shortEntry, x + 30, fy);
-        fy += 18;
-      }
-      if (feed.isEmpty()) {
-        fill(theme.TEXT_DIM); textSize(9); textAlign(CENTER, CENTER);
-        text("No events yet", x + w/2, feedY + feedH / 2);
-      }
-    }
-  }
-
-  void drawActivityGrid(float x, float y, float w) {
-    String[] labels = getCatLabels();
-    color[] cols = {theme.ACCENT, theme.ACCENT2, theme.FAMILY, theme.SUCCESS, theme.TEXT_GOLD, theme.PURPLE};
-    String[] icons = {"★", "⚡", "♥", "✚", "$", "✦"};
-    float bw = (w - 8) / 2f, bh = 70;
-    for (int i = 0; i < 6; i++) {
-      int col = i % 2, row = i / 2;
-      float bx = x + col * (bw + 8);
-      float by = y + row * (bh + 6);
-      boolean hov = theme.isHover(hoverX, hoverY, bx, by, bw, bh);
-      fill(hov ? cols[i] : theme.PANEL_2);
-      stroke(cols[i]); strokeWeight(hov ? 2 : 1);
-      rect(bx, by, bw, bh, 6); noStroke();
-      fill(hov ? color(10, 12, 22) : cols[i]);
-      textSize(16); textAlign(CENTER, CENTER); text(icons[i], bx + bw/2, by + bh/2 - 12);
-      textSize(9); text(labels[i], bx + bw/2, by + bh/2 + 8);
-    }
-  }
-
-  void drawSubMenu(float x, float y, float w) {
-    int ci = catIndex();
-    String[][] subs = getSubLabels();
-    color col  = catColor(ci);
-    String[] labels = subs[ci];
-
-    boolean hBack = theme.isHover(hoverX, hoverY, x, y, 80, 26);
-    fill(hBack ? theme.PANEL_2 : theme.PANEL);
-    stroke(theme.BORDER); strokeWeight(1); rect(x, y, 80, 26, 4); noStroke();
-    fill(theme.TEXT_DIM); textSize(9); textAlign(CENTER, CENTER); text("← BACK", x + 40, y + 13);
-    fill(col); textSize(11); textAlign(LEFT, CENTER); text(getCatLabels()[ci], x + 90, y + 13);
-    y += 32;
-
-    for (int i = 0; i < labels.length; i++) {
-      boolean hov = theme.isHover(hoverX, hoverY, x, y, w, 50);
-      fill(hov ? col : theme.PANEL_2); stroke(hov ? col : theme.BORDER); strokeWeight(hov ? 2 : 1);
-      rect(x, y, w, 50, 5); noStroke();
-      fill(hov ? color(10, 12, 22) : theme.TEXT); textSize(12); textAlign(LEFT, CENTER);
-      text(labels[i], x + 14, y + 25); y += 56;
-    }
-  }
-
-  int catIndex() {
-    ActivityCategory[] cats = ActivityCategory.values();
-    for (int i = 0; i < cats.length; i++) if (cats[i] == selectedCategory) return i;
-    return 0;
-  }
-
-  color catColor(int i) {
-    color[] cols = {theme.ACCENT, theme.ACCENT2, theme.FAMILY, theme.SUCCESS, theme.TEXT_GOLD, theme.PURPLE};
-    return cols[constrain(i, 0, cols.length - 1)];
-  }
-
-  // ════════════════════════════════════════════════════════
-  // INPUT — choice detection uses saved eventPanelY
-  // ════════════════════════════════════════════════════════
-  void onClick(int mx, int my) {
-    // Age Up button
-    float btnY = PY + PH - 62;
-    if (theme.isHover(mx, my, RP_X + 10, btnY, RP_W - 20, 50)) {
-      engine.ageUp(); return;
-    }
-
-    // Event choices — computed from eventPanelY so render and click always agree
-    if (engine.state.pendingEvent != null && engine.state.pendingEvent.choices != null) {
-      ArrayList<EventChoice> choices = engine.state.pendingEvent.choices;
-      float cy = eventPanelY + 116;
-      for (int i = 0; i < min(choices.size(), 3); i++) {
-        if (theme.isHover(mx, my, MP_X + 12, cy, MP_W - 24, 60)) {
-          engine.applyChoice(choices.get(i)); return;
-        }
-        cy += 68;
-      }
-      return; // swallow all other clicks while event is pending
-    }
-
-    // Activity grid / submenu
-    float ax = RP_X + 10, aw = RP_W - 20, ay = PY + 28;
-    if (selectedCategory == null) {
-      float bw = (aw - 8) / 2f, bh = 70;
-      ActivityCategory[] cats = ActivityCategory.values();
-      for (int i = 0; i < 6; i++) {
-        float bx = ax + (i % 2) * (bw + 8);
-        float by = ay + (i / 2) * (bh + 6);
-        if (theme.isHover(mx, my, bx, by, bw, bh)) { selectedCategory = cats[i]; return; }
-      }
-    } else {
-      if (theme.isHover(mx, my, ax, ay, 80, 26)) { selectedCategory = null; return; }
-      ay += 32;
-      String[][] subs = getSubLabels();
-      int ci = catIndex();
-      for (int i = 0; i < subs[ci].length; i++) {
-        if (theme.isHover(mx, my, ax, ay, aw, 50)) {
-          dispatchActivity(ci, i); selectedCategory = null; return;
-        }
-        ay += 56;
-      }
-    }
-  }
-
-  void dispatchActivity(int catIdx, int optIdx) {
-    String[][] keys = getActionKeys();
-    String k = keys[catIdx][optIdx];
-    LifePhase phase = engine.state.lifePhase;
-    if (phase == LifePhase.PRO) {
-      switch (catIdx) {
-        case 0: engine.handleCareerAction(k);       break;
-        case 1: engine.handleTrainingAction(k);     break;
-        case 2: engine.handleRelationshipAction(k); break;
-        case 3: engine.handleHealthAction(k);       break;
-        case 4: engine.handleAssetAction(k);        break;
-        case 5: engine.handleSocialAction(k);       break;
-      }
-    } else {
-      engine.handleEarlyLifeActivity(k);
-    }
-  }
-
-  void onKey(char k, int kc) {
-    // Number keys 1/2/3 select event choices
-    if (engine.state.pendingEvent != null && engine.state.pendingEvent.choices != null) {
-      ArrayList<EventChoice> choices = engine.state.pendingEvent.choices;
-      int idx = -1;
-      if (k == '1') idx = 0;
-      else if (k == '2') idx = 1;
-      else if (k == '3') idx = 2;
-      if (idx >= 0 && idx < choices.size()) {
-        engine.applyChoice(choices.get(idx));
-      }
-    }
-  }
-
-  void onHover(int mx, int my) { super.onHover(mx, my); }
-}
-// ============================================================
-// LIFE-SIM SUBSYSTEMS
-// ============================================================
-
-// Owned Property
-class OwnedProperty {
-  String       name;
-  PropertyType type;
-  float        purchasePrice;
-  float        currentValue;
-  float        weeklyUpkeep;
-  float        weeklyMortgage;
-  float        mortgageLeft;
-  int          yearPurchased;
-
-  OwnedProperty(String n, PropertyType t, float price, int year) {
-    name          = n;
-    type          = t;
-    purchasePrice = price;
-    currentValue  = price;
-    yearPurchased = year;
-    mortgageLeft  = price * 0.80;
-
-    float annualRate = 0.055 / 52.0;
-    switch (t) {
-      case APARTMENT:   weeklyUpkeep = 200;  weeklyMortgage = mortgageLeft * annualRate; break;
-      case CONDO:       weeklyUpkeep = 400;  weeklyMortgage = mortgageLeft * annualRate; break;
-      case HOUSE:       weeklyUpkeep = 800;  weeklyMortgage = mortgageLeft * annualRate; break;
-      case MANSION:     weeklyUpkeep = 3000; weeklyMortgage = mortgageLeft * annualRate; break;
-      case BEACH_HOUSE: weeklyUpkeep = 2000; weeklyMortgage = mortgageLeft * annualRate; break;
-      case PENTHOUSE:   weeklyUpkeep = 5000; weeklyMortgage = mortgageLeft * annualRate; break;
-      default:          weeklyUpkeep = 500;  weeklyMortgage = mortgageLeft * annualRate; break;
-    }
-  }
-
-  float weeklyTotal()   { return weeklyUpkeep + weeklyMortgage; }
-  float downPayment()   { return purchasePrice * 0.20; }
-
-  String typeName() {
-    switch (type) {
-      case APARTMENT:   return "Apartment";
-      case CONDO:       return "Condo";
-      case HOUSE:       return "House";
-      case MANSION:     return "Mansion";
-      case BEACH_HOUSE: return "Beach House";
-      case PENTHOUSE:   return "Penthouse";
-      default:          return "Property";
-    }
-  }
-}
-
-// Owned Vehicle
-class OwnedVehicle {
-  String      name;
-  VehicleType type;
-  float       purchasePrice;
-  float       weeklyUpkeep;
-
-  OwnedVehicle(String n, VehicleType t, float price) {
-    name          = n;
-    type          = t;
-    purchasePrice = price;
-    switch (t) {
-      case ECONOMY_CAR: weeklyUpkeep = 50;   break;
-      case SPORTS_CAR:  weeklyUpkeep = 200;  break;
-      case LUXURY_CAR:  weeklyUpkeep = 500;  break;
-      case SUPERCAR:    weeklyUpkeep = 1500; break;
-      case PRIVATE_JET: weeklyUpkeep = 8000; break;
-      default:          weeklyUpkeep = 100;  break;
-    }
-  }
-
-  String typeName() {
-    switch (type) {
-      case ECONOMY_CAR: return "Economy Car";
-      case SPORTS_CAR:  return "Sports Car";
-      case LUXURY_CAR:  return "Luxury Car";
-      case SUPERCAR:    return "Supercar";
-      case PRIVATE_JET: return "Private Jet";
-      default:          return "Vehicle";
-    }
-  }
-}
-
-// Owned Investment
-class OwnedInvestment {
-  String         name;
-  InvestmentType type;
-  float          invested;
-  float          currentValue;
-  float          weeklyReturnRate;
-  float          volatility;
-
-  OwnedInvestment(String n, InvestmentType t, float amt) {
-    name         = n;
-    type         = t;
-    invested     = amt;
-    currentValue = amt;
-    switch (t) {
-      case STOCKS:           weeklyReturnRate = 0.0020; volatility = 0.030; break;
-      case CRYPTO:           weeklyReturnRate = 0.0040; volatility = 0.100; break;
-      case BONDS:            weeklyReturnRate = 0.0010; volatility = 0.002; break;
-      case REAL_ESTATE_FUND: weeklyReturnRate = 0.0015; volatility = 0.010; break;
-      case BUSINESS_VENTURE: weeklyReturnRate = 0.0030; volatility = 0.050; break;
-      default:               weeklyReturnRate = 0.0015; volatility = 0.020; break;
-    }
-  }
-
-  void updateWeek() {
-    float r = weeklyReturnRate + randomGaussian() * volatility;
-    currentValue *= (1 + r);
-    if (currentValue < 0) currentValue = 0;
-  }
-
-  float unrealizedGain() { return currentValue - invested; }
-  float gainPct()        { return invested > 0 ? (unrealizedGain() / invested) * 100 : 0; }
-
-  String typeName() {
-    switch (type) {
-      case STOCKS:           return "Stock Market";
-      case CRYPTO:           return "Crypto";
-      case BONDS:            return "Bonds";
-      case REAL_ESTATE_FUND: return "Real Estate Fund";
-      case BUSINESS_VENTURE: return "Venture Capital";
-      default:               return "Investment";
-    }
-  }
-}
-
-// Owned Business
-class OwnedBusiness {
-  String name;
-  float  invested;
-  float  currentValue;
-  float  weeklyRevenue;
-  float  weeklyExpenses;
-  int    weeksOwned;
-  boolean isProfit;
-
-  OwnedBusiness(String n, float inv) {
-    name         = n;
-    invested     = inv;
-    currentValue = inv;
-    weeksOwned   = 0;
-    weeklyRevenue  = inv * 0.0022;
-    weeklyExpenses = inv * 0.0016;
-  }
-
-  float weeklyProfit() { return weeklyRevenue - weeklyExpenses; }
-
-  void updateWeek() {
-    weeksOwned++;
-    if (weeksOwned > 52 && random(1) < 0.06) weeklyRevenue  *= 1.04;
-    if (random(1) < 0.02)                    weeklyExpenses *= 1.08;
-    weeklyRevenue  = max(0, weeklyRevenue);
-    weeklyExpenses = max(0, weeklyExpenses);
-    currentValue   = invested + weeklyProfit() * weeksOwned * 0.9;
-    currentValue   = max(0, currentValue);
-    isProfit       = weeklyProfit() > 0;
-  }
-}
-
-// Mental Health
-class MentalHealthSystem {
-  MentalState state         = MentalState.STABLE;
-  float       stressLevel   = 30;
-  float       happiness     = 70;
-  boolean     inTherapy     = false;
-  int         therapyWeeks  = 0;
-
-  void updateWeek(boolean hadTournamentWin, boolean hadTournamentLoss, boolean rested) {
-    if (hadTournamentWin)  { stressLevel = max(0, stressLevel - 6); happiness = min(100, happiness + 10); }
-    if (hadTournamentLoss) { stressLevel = min(100, stressLevel + 9); happiness = max(0, happiness - 7); }
-    if (rested)            { stressLevel = max(0, stressLevel - 4); }
-    if (inTherapy) {
-      therapyWeeks--;
-      stressLevel = max(0, stressLevel - 7);
-      happiness   = min(100, happiness + 5);
-      if (therapyWeeks <= 0) { inTherapy = false; therapyWeeks = 0; }
-    }
-    stressLevel += random(-2, 3);
-    stressLevel  = constrain(stressLevel, 0, 100);
-    happiness    = constrain(happiness,   0, 100);
-    recalcState();
-  }
-
-  void recalcState() {
-    if      (stressLevel >= 80 || happiness <= 15) state = MentalState.BURNED_OUT;
-    else if (stressLevel >= 65 || happiness <= 25) state = MentalState.DEPRESSED;
-    else if (stressLevel >= 50 || happiness <= 40) state = MentalState.ANXIOUS;
-    else if (stressLevel >= 35 || happiness <= 55) state = MentalState.STRESSED;
-    else if (stressLevel >= 20 || happiness <= 70) state = MentalState.STABLE;
-    else state = MentalState.THRIVING;
-  }
-
-  float performanceModifier() {
-    switch (state) {
-      case THRIVING:   return 1.10;
-      case STABLE:     return 1.00;
-      case STRESSED:   return 0.95;
-      case ANXIOUS:    return 0.88;
-      case DEPRESSED:  return 0.80;
-      case BURNED_OUT: return 0.70;
-      default:         return 1.00;
-    }
-  }
-
-  void startTherapy(int weeks) { inTherapy = true; therapyWeeks = weeks; }
-
-  color stateColor() {
-    switch (state) {
-      case THRIVING:   return color(55, 185, 95);
-      case STABLE:     return color(80, 140, 220);
-      case STRESSED:   return color(220, 160, 40);
-      case ANXIOUS:    return color(200, 120, 40);
-      case DEPRESSED:  return color(160, 80, 160);
-      case BURNED_OUT: return color(210, 65, 65);
-      default:         return color(120, 130, 150);
-    }
-  }
-
-  String stateLabel() {
-    switch (state) {
-      case THRIVING:   return "Thriving";
-      case STABLE:     return "Stable";
-      case STRESSED:   return "Stressed";
-      case ANXIOUS:    return "Anxious";
-      case DEPRESSED:  return "Depressed";
-      case BURNED_OUT: return "Burned Out";
-      default:         return "Unknown";
-    }
-  }
-}
-
-// Social Media
-class SocialMediaProfile {
-  float      followers      = 5000;
-  SocialTier tier           = SocialTier.UNKNOWN;
-  float      engagementRate = 0.05;
-  float      controversyScore = 0;
-  boolean    hasPRManager   = false;
-
-  void updateWeek(int ranking, boolean viralEvent) {
-    float growthRate = 0.003;
-    growthRate += map(constrain(500 - ranking, 0, 500), 0, 500, 0, 0.018);
-    if (viralEvent) growthRate += 0.05;
-    if (hasPRManager) growthRate += 0.005;
-    controversyScore = max(0, controversyScore - 2);
-    followers *= (1 + growthRate);
-    followers  = max(followers, 100);
-    updateTier();
-  }
-
-  void updateTier() {
-    if      (followers >= 10_000_000) tier = SocialTier.MEGASTAR;
-    else if (followers >=  1_000_000) tier = SocialTier.GLOBAL_ICON;
-    else if (followers >=    100_000) tier = SocialTier.NATIONAL_STAR;
-    else if (followers >=     10_000) tier = SocialTier.LOCAL_CELEB;
-    else                               tier = SocialTier.UNKNOWN;
-  }
-
-  float weeklyBrandValue() {
-    float base = followers * 0.0005;
-    base *= (1 + engagementRate * 4);
-    if (hasPRManager) base *= 1.3;
-    return base;
-  }
-
-  String tierLabel() {
-    switch (tier) {
-      case MEGASTAR:      return "Megastar";
-      case GLOBAL_ICON:   return "Global Icon";
-      case NATIONAL_STAR: return "National Star";
-      case LOCAL_CELEB:   return "Local Celeb";
-      default:            return "Unknown";
-    }
-  }
-
-  String followersLabel() {
-    if (followers >= 1_000_000) return nf(followers / 1_000_000, 0, 1) + "M";
-    if (followers >= 1_000)     return (int)(followers / 1000) + "K";
-    return "" + (int)followers;
-  }
-}
-
-// Agent Contract
-class AgentContract {
-  AgentTier tier;
-  String    agentName;
-  float     commissionRate;
-  float     weeklySalary;
-  float     bonusEndorsementMultiplier;
-
-  AgentContract(AgentTier t) {
-    tier = t;
-    switch (t) {
-      case NO_AGENT:
-        agentName = "No Agent"; commissionRate = 0;    weeklySalary = 0;     bonusEndorsementMultiplier = 0;    break;
-      case BASIC_AGENT:
-        agentName = "Local Agent"; commissionRate = 0.05; weeklySalary = 500;   bonusEndorsementMultiplier = 0.10; break;
-      case MID_TIER:
-        agentName = "IMG Sports";  commissionRate = 0.08; weeklySalary = 1500;  bonusEndorsementMultiplier = 0.30; break;
-      case ELITE:
-        agentName = "WME Agency";  commissionRate = 0.10; weeklySalary = 3500;  bonusEndorsementMultiplier = 0.60; break;
-      case SUPERAGENT:
-        agentName = "Roc Nation";  commissionRate = 0.12; weeklySalary = 8000;  bonusEndorsementMultiplier = 1.10; break;
-      default:
-        agentName = "None"; commissionRate = 0; weeklySalary = 0; bonusEndorsementMultiplier = 0; break;
-    }
-  }
-
-  String tierLabel() {
-    switch (tier) {
-      case NO_AGENT:    return "No Agent";
-      case BASIC_AGENT: return "Local Agent";
-      case MID_TIER:    return "Mid-Tier Agency";
-      case ELITE:       return "Elite Agency";
-      case SUPERAGENT:  return "Superagent";
-      default:          return "Unknown";
-    }
-  }
-
-  color tierColor() {
-    switch (tier) {
-      case SUPERAGENT:  return color(220, 160, 40);
-      case ELITE:       return color(180, 80, 220);
-      case MID_TIER:    return color(60, 140, 220);
-      case BASIC_AGENT: return color(60, 180, 100);
-      default:          return color(120, 130, 150);
-    }
-  }
-}
-
-// Award
-class Award {
-  AwardType type;
-  int       year;
-  String    sport;
-
-  Award(AwardType t, int y, String s) { type = t; year = y; sport = s; }
-
-  String label() {
-    switch (type) {
-      case PLAYER_OF_YEAR:   return "Player of the Year " + year;
-      case BEST_NEWCOMER:    return "Best Newcomer " + year;
-      case COMEBACK_PLAYER:  return "Comeback Player of the Year " + year;
-      case MVP:              return "MVP " + year;
-      case HUMANITARIAN:     return "Humanitarian Award " + year;
-      case SPORTSMANSHIP:    return "Sportsmanship Award " + year;
-      default:               return "Award " + year;
-    }
-  }
-}
-// ============================================================
-// LIFESTYLE SCREEN - Life simulation view
-// ============================================================
-class LifestyleScreen extends BaseScreen {
   LifeTab activeTab = LifeTab.OVERVIEW;
 
   LifestyleScreen(GameEngine e) { super(e); }
 
+  /** OOP: Polymorphism — identifies this screen for headers and navigation. */
+  String getScreenTitle() { return "LIFESTYLE"; } // OOP: Polymorphism
+
   void render() {
+    renderScreenHeader(); // OOP: Inheritance — calls getScreenTitle() polymorphically
     Player p = engine.state.player;
     if (p == null) return;
 
@@ -4035,9 +7723,1859 @@ class LifestyleScreen extends BaseScreen {
     }
   }
 }
+
 // ============================================================
-// MAIN MENU SCREEN
+// MATCH SCREEN  —  post-tournament results breakdown
 // ============================================================
+/**
+ * MatchScreen — Displays the results of the player's most recent tournament run.
+ * OOP role: Inheritance (extends BaseScreen)
+ * Collaborators: GameEngine, UITheme, Player
+ */
+class MatchScreen extends BaseScreen { // OOP: Inheritance — extends BaseScreen
+  // CARD_PAD and SECTION_GAP inherited from BaseScreen
+
+  MatchScreen(GameEngine e) { super(e); }
+
+  /** OOP: Polymorphism — identifies this screen for headers and navigation. */
+  String getScreenTitle() { return "LAST MATCH"; } // OOP: Polymorphism
+
+  void render() {
+    renderScreenHeader(); // OOP: Inheritance — calls getScreenTitle() polymorphically
+    TournamentRun run = engine.state.lastTournamentRun;
+    if (run == null) {
+      fill(theme.TEXT_DIM); textSize(14); textAlign(CENTER, CENTER);
+      text("No recent tournament", width / 2, height / 2);
+      return;
+    }
+
+    float x = 40, y = 70;
+    fill(run.won ? theme.ACCENT : theme.TEXT_DIM);
+    textSize(24); textAlign(LEFT, TOP);
+    text((run.won ? "WON - " : "EXITED - ") + run.tournament.name, x, y);
+    y += 50;
+
+    fill(theme.TEXT_DIM); textSize(11);
+    String _tVenue = !run.tournament.venueLabel.isEmpty() ? run.tournament.venueLabel : sportVenueName(run.tournament.surface, run.tournament.sport);
+    String _tTier  = tierLabel(run.tournament.tier, run.tournament.sport);
+    text(_tVenue + " · " + _tTier, x, y);
+    y += 40;
+
+    sectionHeader("MATCH RESULTS", x, y); y += 20;
+    for (MatchResult r : run.results) {
+      fill(r.playerWon ? color(20, 45, 25) : color(45, 20, 20));
+      rect(x, y, 600, 40, 4);
+      fill(r.playerWon ? theme.SUCCESS : theme.DANGER);
+      textSize(12); textAlign(LEFT, CENTER);
+      text(r.playerWon ? "WIN" : "LOSS", x + 12, y + 20);
+
+      fill(theme.TEXT); textAlign(LEFT, CENTER);
+      text(r.round + " vs " + (r.playerWon ? r.loserName : r.winnerName), x + 65, y + 20);
+
+      fill(theme.TEXT_DIM); textAlign(RIGHT, CENTER);
+      text(r.score + " +" + r.rankingPointsAwarded + " pts", x + 588, y + 20);
+      y += 46;
+    }
+
+    y += 20;
+    fill(theme.TEXT_DIM); textSize(12); textAlign(LEFT, TOP);
+    text("Total points earned: " + run.totalPoints() +
+         " | Prize: " + formatMoney(run.totalPrize()), x, y);
+  }
+
+  String sportVenueName(Surface s, Sport sport) {
+    switch (sport) {
+      case BASKETBALL: return "ARENA";
+      case SOCCER:     return "PITCH";
+      case GOLF:       return s == Surface.GRASS ? "LINKS" : "COURSE";
+      case BOXING:     return "RING";
+      default:         return s.toString().replace("_", " ");
+    }
+  }
+
+  String tierLabel(TournamentTier t, Sport s) {
+    switch (s) {
+      case BASKETBALL:
+        switch (t) {
+          case GRAND_SLAM:   return "FINALS";
+          case MASTERS_1000: return "PLAYOFF";
+          case ATP_500:      return "CONF";
+          case ATP_250:      return "REGULAR";
+          default:           return "GAME";
+        }
+      case SOCCER:
+        switch (t) {
+          case GRAND_SLAM:   return "CUP";
+          case MASTERS_1000: return "CHAMPION";
+          case ATP_500:      return "LEAGUE";
+          case ATP_250:      return "MATCH";
+          default:           return "GAME";
+        }
+      case GOLF:
+        switch (t) {
+          case GRAND_SLAM:   return "MAJOR";
+          case MASTERS_1000: return "PREMIER";
+          case ATP_500:      return "INVIT.";
+          case ATP_250:      return "TOUR";
+          default:           return "EVENT";
+        }
+      case BOXING:
+        switch (t) {
+          case GRAND_SLAM:   return "TITLE";
+          case MASTERS_1000: return "DEFENSE";
+          case ATP_500:      return "MAIN";
+          case ATP_250:      return "FIGHT";
+          default:           return "BOUT";
+        }
+      default: // TENNIS
+        switch (t) {
+          case GRAND_SLAM:   return "SLAM";
+          case MASTERS_1000: return "MASTERS";
+          case ATP_500:      return "ATP500";
+          case ATP_250:      return "ATP250";
+          default:           return "CHALL";
+        }
+    }
+  }
+}
+
+// ============================================================
+// TRAINING SCREEN  —  session type, intensity, and results
+// ============================================================
+/**
+ * TrainingScreen — Lets the player configure and run training sessions,
+ *                  view projected gains, and manage injury risk.
+ * OOP role: Inheritance (extends BaseScreen)
+ * Collaborators: GameEngine, UITheme, Player
+ */
+class TrainingScreen extends BaseScreen { // OOP: Inheritance — extends BaseScreen
+  // CARD_PAD and SECTION_GAP inherited from BaseScreen
+
+  String[] trainingTypes = {"SERVE", "FITNESS", "MENTAL", "TACTICAL"};
+  float[]  intensities   = {60, 60, 60, 60};
+  int      selectedType  = 0;
+
+  // Track actual button position from render so onClick uses the same coords
+  float trainBtnY  = -1;
+  float tabY       = -1;
+  float sliderXr   = 0, sliderYr = 0, sliderWr = 0;
+
+  boolean hoverTrain  = false;
+  String  lastResult  = "";
+  float   resultAlpha = 0;
+  boolean showCoaching = false;
+
+  TrainingScreen(GameEngine e) { super(e); }
+
+  /** OOP: Polymorphism — identifies this screen for headers and navigation. */
+  String getScreenTitle() { return "TRAINING"; } // OOP: Polymorphism
+
+  void render() {
+    Player p = engine.state.player;
+    if (p == null) return;
+
+    theme.drawDotGrid();
+
+    // COACHES tab button at top-right
+    boolean chov = theme.isHover(hoverX, hoverY, 560, 70, 170, 36);
+    if (showCoaching) {
+      theme.drawButton(560, 70, 170, 36, "< BACK TO TRAINING", chov);
+      engine.coachingScreen.hoverX = hoverX; engine.coachingScreen.hoverY = hoverY;
+      engine.coachingScreen.render();
+      return;
+    }
+    theme.drawButton(560, 70, 170, 36, "🏋 COACHES", chov);
+
+    float x = 30, y = 70;
+
+    // Header
+    fill(theme.ACCENT); textSize(24); textAlign(LEFT, TOP);
+    text("TRAINING CAMP", x, y);
+    fill(theme.TEXT_DIM); textSize(12);
+    text("Choose type · set intensity · run session", x, y + 32);
+    y += 68;
+
+    // ── Type tabs ──────────────────────────────────────────
+    tabY = y;
+    color[] tabCols = { theme.ACCENT, theme.SUCCESS, theme.PURPLE, theme.ACCENT2 };
+    for (int i = 0; i < trainingTypes.length; i++) {
+      boolean sel  = (i == selectedType);
+      color   tc   = tabCols[i];
+      fill(sel ? tc : theme.PANEL_2);
+      stroke(sel ? tc : theme.BORDER); strokeWeight(1);
+      rect(x + i * 168, y, 156, 44, 6); noStroke();
+      fill(sel ? color(10, 12, 22) : tc);
+      textSize(12); textAlign(CENTER, CENTER);
+      text(trainingTypeLabel(trainingTypes[i], engine.state.currentSport), x + i * 168 + 78, y + 22);
+    }
+    y += 58;
+
+    // ── Intensity card ────────────────────────────────────
+    theme.drawCard(x, y, 730, 190);
+
+    fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, TOP);
+    text("INTENSITY", x + 20, y + 14);
+    fill(theme.ACCENT); textSize(28); textAlign(LEFT, TOP);
+    text((int)intensities[selectedType] + "%", x + 100, y + 8);
+
+    // Labels
+    fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP);
+    text("LOW", x + 20, y + 48);
+    textAlign(RIGHT, TOP);
+    text("MAX", x + 710, y + 48);
+
+    // Slider
+    float sX = x + 20, sY = y + 62, sW = 690, sH = 14;
+    float filled = map(intensities[selectedType], 0, 100, 0, sW);
+    fill(theme.PANEL_2); rect(sX, sY, sW, sH, 7);
+    fill(theme.ACCENT);  rect(sX, sY, filled, sH, 7);
+    // Handle
+    fill(theme.BG); stroke(theme.ACCENT); strokeWeight(2);
+    ellipse(sX + filled, sY + sH / 2, 24, 24); noStroke();
+    fill(theme.ACCENT); ellipse(sX + filled, sY + sH / 2, 12, 12);
+
+    // Store slider coords for drag detection
+    sliderXr = sX; sliderYr = sY; sliderWr = sW;
+
+    // Projected gains
+    TrainingSession sess = new TrainingSession(trainingTypes[selectedType], intensities[selectedType]);
+    TrainingOutcome out  = sess.projectedGains();
+
+    float gy = y + 96;
+    fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, TOP);
+    text("PROJECTED GAINS:", x + 20, gy);
+
+    SportConfig trainSc = engine.state.sportConfig != null ? engine.state.sportConfig : getSportConfig(Sport.TENNIS);
+    String[] trainSn = trainSc.statNames;
+    drawGainRow(trainSn.length > 0 ? trainSn[0] : "Stat 1", out.serveGain,    x + 130, gy);
+    drawGainRow(trainSn.length > 1 ? trainSn[1] : "Stat 2", out.forehandGain, x + 250, gy);
+    drawGainRow(trainSn.length > 2 ? trainSn[2] : "Stat 3", out.backhandGain, x + 370, gy);
+    drawGainRow("Speed",    out.speedGain,    x + 490, gy);
+    drawGainRow("Stamina",  out.staminaGain,  x + 590, gy);
+    drawGainRow("Mental",   out.mentalGain,   x + 658, gy);
+
+    gy += 22;
+    fill(theme.DANGER); textSize(10); textAlign(LEFT, TOP);
+    text("Fatigue +" + (int)out.fatigueAdded + "%", x + 130, gy);
+
+    float risk = p.health.injuryRisk(p.form, intensities[selectedType] / 100.0);
+    fill(risk > 0.1 ? theme.DANGER : theme.TEXT_DIM);
+    text("Injury risk: " + (int)(risk * 100) + "%", x + 300, gy);
+
+    y += 204;
+
+    // ── Two-column layout ─────────────────────────────────
+    // Left: RUN button + result
+    trainBtnY = y;   // <-- saved for onClick
+    hoverTrain = theme.isHover(hoverX, hoverY, x, y, 340, 54);
+    fill(hoverTrain ? theme.ACCENT : color(22, 36, 18));
+    stroke(theme.ACCENT); strokeWeight(hoverTrain ? 2 : 1);
+    rect(x, y, 340, 54, 6); noStroke();
+    fill(hoverTrain ? color(10, 12, 22) : theme.ACCENT);
+    textSize(14); textAlign(CENTER, CENTER);
+    text("▶  RUN TRAINING SESSION", x + 170, y + 27);
+
+    if (resultAlpha > 0) {
+      resultAlpha = max(0, resultAlpha - 2);
+      theme.drawCard(x, y + 64, 340, 56);
+      boolean ok = lastResult.startsWith("[OK]");
+      fill(ok ? theme.SUCCESS : theme.DANGER, resultAlpha);
+      textSize(11); textAlign(LEFT, CENTER);
+      text(lastResult.replace("[OK] ", "").replace("[!] ", ""), x + 14, y + 92);
+    }
+
+    // Right: player current stats summary
+    float cx = x + 360;
+    theme.drawCard(cx, y, 370, 120);
+    fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP);
+    text("CURRENT STATS", cx + 16, y + 10);
+
+    PlayerAttributes eff = p.effectiveAttributes();
+    SportConfig sc = engine.state.sportConfig != null ? engine.state.sportConfig : getSportConfig(Sport.TENNIS);
+    int[] vals = {eff.serve, eff.forehand, eff.backhand, eff.volley, eff.speed, eff.stamina, eff.mental};
+
+    for (int i = 0; i < sc.statNames.length; i++) {
+      float bx = cx + 16 + (i % 4) * 88;
+      float by = y + 28 + (i / 4) * 44;
+      fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text(sc.statNames[i], bx, by);
+      fill(theme.ACCENT2); textSize(16); textAlign(LEFT, TOP); text("" + vals[i], bx, by + 12);
+    }
+
+    // Fatigue + confidence bars
+    y += 134;
+    theme.drawCard(x, y, 730, 54);
+    fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, CENTER);
+    text("FATIGUE", x + 16, y + 14);
+    theme.drawStatBar(x + 80, y + 8, 240, 10, p.form.fatigue, 100, p.form.fatigue > 70 ? theme.DANGER : theme.ACCENT2);
+    fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, CENTER);
+    text("CONFIDENCE", x + 360, y + 14);
+    theme.drawStatBar(x + 452, y + 8, 256, 10, p.form.confidence, 100, theme.SUCCESS);
+
+    // Injury warning
+    if (p.health.status != InjuryStatus.HEALTHY) {
+      y += 62;
+      fill(theme.DANGER, 45); rect(x, y, 730, 36, 5);
+      fill(theme.DANGER); textSize(11); textAlign(CENTER, CENTER);
+      text("INJURED: " + p.health.injuredPart + " — " + p.health.weeksRemaining + " weeks remaining", x + 365, y + 18);
+    }
+
+    // Drag slider during mousePress
+    if (mousePressed && theme.isHover(mouseX, mouseY, sliderXr - 12, sliderYr - 8, sliderWr + 24, 30)) {
+      intensities[selectedType] = constrain(map(mouseX, sliderXr, sliderXr + sliderWr, 0, 100), 10, 100);
+    }
+  }
+
+  void drawGainRow(String label, int gain, float x, float y) {
+    fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text(label, x, y);
+    fill(gain > 0 ? theme.SUCCESS : theme.TEXT_DIM); textSize(13); textAlign(LEFT, TOP);
+    text((gain > 0 ? "+" : "") + gain, x, y + 10);
+  }
+
+  String trainingTypeLabel(String type, Sport sport) {
+    switch (type) {
+      case "SERVE":
+        switch (sport) {
+          case BASKETBALL: return "SHOOTING";
+          case SOCCER:     return "FINISHING";
+          case GOLF:       return "DRIVING";
+          case BOXING:     return "COMBINATIONS";
+          default:         return "SERVE";
+        }
+      case "TACTICAL":
+        switch (sport) {
+          case BASKETBALL: return "PLAYMAKING";
+          case SOCCER:     return "TACTICS";
+          case GOLF:       return "COURSE MGMT";
+          case BOXING:     return "DEFENSE";
+          default:         return "TACTICAL";
+        }
+      default: return type; // FITNESS, MENTAL stay the same
+    }
+  }
+
+  void onClick(int mx, int my) {
+    // COACHES tab toggle
+    if (theme.isHover(mx, my, 560, 70, 170, 36)) {
+      showCoaching = !showCoaching;
+      return;
+    }
+    // Delegate to coaching screen when active
+    if (showCoaching) { engine.coachingScreen.onClick(mx, my); return; }
+    // Tab selection
+    if (tabY >= 0) {
+      for (int i = 0; i < trainingTypes.length; i++) {
+        if (theme.isHover(mx, my, 30 + i * 168, tabY, 156, 44)) { selectedType = i; return; }
+      }
+    }
+    // Train button — uses saved trainBtnY so coords always match render
+    if (trainBtnY >= 0 && theme.isHover(mx, my, 30, trainBtnY, 340, 54)) {
+      Player p = engine.state.player;
+      if (p == null) return;
+      TrainingSession sess = new TrainingSession(trainingTypes[selectedType], intensities[selectedType]);
+      p.progression.applyTrainingGains(sess);
+      float cMult = (p.coachingStaff!=null) ? p.coachingStaff.overallMult() : 1.0f;
+      p.baseAttributes.serve = min(99, p.baseAttributes.serve + (int)((cMult-1)*2));
+      float risk = p.health.injuryRisk(p.form, intensities[selectedType] / 100.0);
+      if (random(1) < risk) {
+        String[] parts = {"wrist","knee","shoulder","back","ankle"};
+        String part = parts[(int)random(parts.length)];
+        int weeks = (int)random(1, 6);
+        p.health.applyInjury(part, weeks);
+        lastResult = "[!] Injured " + part + " — out " + weeks + " weeks";
+        engine.state.lastEvent = lastResult;
+      } else {
+        int fatGain = (int)(intensities[selectedType] * 0.3);
+        lastResult = "[OK] Training done! Fatigue +" + fatGain + "% — gains applied.";
+        engine.state.lastEvent = "Training session completed — gains applied.";
+      }
+      p.addLifeEvent(engine.state.lastEvent, engine.state.currentYear);
+      resultAlpha = 255;
+    }
+  }
+}
+
+// ============================================================
+// COACHING SCREEN  —  hire/release coaching staff
+// ============================================================
+/**
+ * CoachingScreen — Manage the player's coaching staff: view current coaches,
+ *                  browse the market, hire, and release.
+ * OOP role: Inheritance (extends BaseScreen)
+ * Collaborators: GameEngine, UITheme, Player
+ */
+class CoachingScreen extends BaseScreen { // OOP: Inheritance — extends BaseScreen
+  // CARD_PAD and SECTION_GAP inherited from BaseScreen
+
+  boolean showMarket=false;
+  ArrayList<Coach> marketCache=null;
+
+  CoachingScreen(GameEngine e){super(e);}
+
+  /** OOP: Polymorphism — identifies this screen for headers and navigation. */
+  String getScreenTitle() { return "COACHING STAFF"; } // OOP: Polymorphism
+
+  void render(){
+    renderScreenHeader(); // OOP: Inheritance — calls getScreenTitle() polymorphically
+    Player p=engine.state.player; if(p==null||p.coachingStaff==null)return;
+    CoachingStaff cs=p.coachingStaff;
+    float x=30,y=70,w=700;
+    fill(theme.GOLD);textSize(22);textAlign(LEFT,TOP);text("🏋  COACHING STAFF",x,y);y+=34;
+    fill(cs.weeklyWages()>15?theme.DANGER:theme.SUCCESS);textSize(11);textAlign(LEFT,TOP);
+    text("Staff: "+cs.coaches.size()+"/"+cs.maxCoaches+"  |  Wages: $"+(int)cs.weeklyWages()+"K/wk  |  Training bonus: "+nf(cs.overallMult(),1,2)+"x",x,y);y+=30;
+    sectionHeader("YOUR STAFF",x,y);y+=20;
+    if(cs.coaches.isEmpty()){fill(theme.TEXT_DIM);textSize(12);textAlign(LEFT,TOP);text("No coaches hired. Training solo gives 1.0x gains.",x,y+8);y+=36;}
+    for(int i=0;i<cs.coaches.size();i++){
+      Coach c=cs.coaches.get(i);
+      boolean hov=theme.isHover(hoverX,hoverY,x,y,w,60);
+      fill(hov?theme.PANEL_3:theme.PANEL);stroke(hov?c.tierColor():theme.BORDER);strokeWeight(1);rect(x,y,w,60,6);noStroke();
+      fill(c.tierColor());textSize(18);textAlign(LEFT,CENTER);text(c.emoji(),x+12,y+30);
+      fill(theme.TEXT);textSize(14);textAlign(LEFT,TOP);text(c.name,x+42,y+8);
+      fill(c.tierColor());textSize(9);textAlign(LEFT,TOP);text(c.tier()+" "+c.type.toString().replace("_"," "),x+42,y+26);
+      fill(theme.TEXT_DIM);textSize(10);text(c.personality+" • "+c.specialization,x+42,y+42);
+      fill(theme.TEXT_DIM);textSize(10);textAlign(RIGHT,TOP);text("Eff:"+(int)c.effectiveness+"%  $"+c.salary+"K/wk",x+w-80,y+8);
+      boolean fhov=theme.isHover(hoverX,hoverY,x+w-78,y+20,70,24);
+      theme.drawDangerButton(x+w-78,y+20,70,24,"RELEASE",fhov);
+      y+=66;
+    }
+    y+=10;
+    boolean mhov=theme.isHover(hoverX,hoverY,x,y,220,38);
+    theme.drawButton(x,y,220,38,showMarket?"HIDE MARKET":"BROWSE COACHES",mhov);y+=50;
+    if(showMarket){
+      if(marketCache==null) marketCache=buildMarket();
+      sectionHeader("AVAILABLE COACHES",x,y);y+=20;
+      for(int i=0;i<marketCache.size();i++){
+        Coach c=marketCache.get(i); boolean full=cs.coaches.size()>=cs.maxCoaches;
+        boolean hov=theme.isHover(hoverX,hoverY,x,y,w,60);
+        fill(hov&&!full?theme.PANEL_3:theme.PANEL_2);stroke(hov&&!full?c.tierColor():theme.BORDER);strokeWeight(1);rect(x,y,w,60,6);noStroke();
+        fill(c.tierColor());textSize(18);textAlign(LEFT,CENTER);text(c.emoji(),x+12,y+30);
+        fill(theme.TEXT);textSize(14);textAlign(LEFT,TOP);text(c.name,x+42,y+8);
+        fill(c.tierColor());textSize(9);textAlign(LEFT,TOP);text(c.tier()+" "+c.type.toString().replace("_"," "),x+42,y+26);
+        fill(theme.TEXT_DIM);textSize(10);text(c.personality+" • "+c.specialization,x+42,y+42);
+        fill(theme.TEXT_DIM);textSize(10);textAlign(RIGHT,TOP);text("$"+c.salary+"K/wk  Eff:"+(int)c.effectiveness+"%",x+w-80,y+8);
+        if(!full){boolean hhov=theme.isHover(hoverX,hoverY,x+w-78,y+20,70,24);theme.drawButton(x+w-78,y+20,70,24,"HIRE",hhov);}
+        else{fill(theme.TEXT_DIM);textSize(9);textAlign(RIGHT,CENTER);text("Staff full",x+w-8,y+30);}
+        y+=66;
+      }
+    }
+  }
+
+  ArrayList<Coach> buildMarket(){
+    ArrayList<Coach> m=new ArrayList<Coach>();
+    String[] ns={"James Rivera","Maria Santos","David Chen","Aisha Okonkwo","Tom Bradley","Elena Petrov","Carlos Mendez","Sarah Kim"};
+    CoachType[] ts=CoachType.values();
+    for(int i=0;i<6;i++){float e=45+random(50);m.add(new Coach(ns[(int)random(ns.length)],ts[(int)random(ts.length)],e,max(1,(int)(e*0.12f))));}
+    return m;
+  }
+
+  void onClick(int mx,int my){
+    Player p=engine.state.player; if(p==null||p.coachingStaff==null)return;
+    CoachingStaff cs=p.coachingStaff;
+    float x=30,y=134;
+    // Release buttons
+    for(int i=0;i<cs.coaches.size();i++){if(theme.isHover(mx,my,x+700-78,y+20,70,24)){cs.coaches.remove(i);marketCache=null;return;}y+=66;}
+    y+=10;
+    if(theme.isHover(mx,my,x,y,220,38)){showMarket=!showMarket;if(showMarket)marketCache=buildMarket();return;}y+=50;
+    if(showMarket&&marketCache!=null){
+      y+=20;
+      for(Coach c:marketCache){if(theme.isHover(mx,my,x+622,y+20,70,24)&&cs.coaches.size()<cs.maxCoaches){cs.coaches.add(c);marketCache=null;p.career.addHistory("Hired "+c.name+" as "+c.type.toString().replace("_"," "));if(engine.state.popups!=null)engine.state.popups.push("COACH HIRED!",c.name+" joins your coaching staff.",c.tierColor());return;}y+=66;}
+    }
+  }
+
+  void onHover(int mx,int my){super.onHover(mx,my);}
+}
+
+// ============================================================
+// NUTRITION SCREEN  —  meal plans and supplements
+// ============================================================
+/**
+ * NutritionScreen — Configure the player's meal plan and active supplements
+ *                   to improve stamina, recovery, and injury resistance.
+ * OOP role: Inheritance (extends BaseScreen)
+ * Collaborators: GameEngine, UITheme, Player
+ */
+class NutritionScreen extends BaseScreen { // OOP: Inheritance — extends BaseScreen
+  // CARD_PAD and SECTION_GAP inherited from BaseScreen
+
+  NutritionScreen(GameEngine e) { super(e); }
+
+  /** OOP: Polymorphism — identifies this screen for headers and navigation. */
+  String getScreenTitle() { return "NUTRITION"; } // OOP: Polymorphism
+
+  void render() {
+    renderScreenHeader(); // OOP: Inheritance — calls getScreenTitle() polymorphically
+    Player p = engine.state.player;
+    if (p == null || p.nutrition == null) return;
+    NutritionSystem ns = p.nutrition;
+    NutritionPlan[] plans = ns.getPlans();
+    float x = 30, y = 70, w = 700;
+
+    fill(theme.GOLD); textSize(22); textAlign(LEFT, TOP);
+    text("NUTRITION", x, y); y += 34;
+    fill(theme.TEXT_DIM); textSize(11);
+    text("Your diet affects stamina, recovery, and injury resistance every single week.", x, y); y += 32;
+
+    // Meal plan cards
+    fill(theme.TEXT); textSize(12); textAlign(LEFT, TOP); text("MEAL PLAN", x, y); y += 18;
+    float pw = (w - plans.length * 6f) / plans.length;
+    for (int i = 0; i < plans.length; i++) {
+      NutritionPlan pl = plans[i];
+      boolean sel = ns.currentPlanIdx == i;
+      boolean hov = theme.isHover(hoverX, hoverY, x + i * (pw + 6), y, pw, 90);
+      fill(sel ? pl.planColor : hov ? theme.PANEL_3 : theme.PANEL);
+      stroke(sel || hov ? pl.planColor : theme.BORDER); strokeWeight(sel ? 2 : 1);
+      rect(x + i * (pw + 6), y, pw, 90, 8); noStroke();
+      fill(sel ? color(10, 12, 25) : theme.TEXT);
+      textSize(18); textAlign(CENTER, TOP);
+      text(pl.emoji, x + i * (pw + 6) + pw / 2, y + 10);
+      textSize(10); text(pl.name, x + i * (pw + 6) + pw / 2, y + 42);
+      fill(sel ? color(10, 12, 25) : theme.TEXT_DIM);
+      textSize(9); text("$" + pl.weeklyCost + "K/wk", x + i * (pw + 6) + pw / 2, y + 58);
+      if (pl.staminaBonus != 0) {
+        fill(sel ? color(10, 12, 25) : (pl.staminaBonus > 0 ? theme.SUCCESS : theme.DANGER));
+        textSize(9); text((pl.staminaBonus > 0 ? "+" : "") + (int)pl.staminaBonus + " STA",
+                          x + i * (pw + 6) + pw / 2, y + 72);
+      }
+    }
+    y += 106;
+
+    // Current plan stats
+    NutritionPlan cur = ns.currentPlan();
+    theme.drawCard(x, y, w, 72);
+    fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, TOP);
+    text("ACTIVE: " + cur.emoji + " " + cur.name +
+         "   |   $" + cur.weeklyCost + "K/wk" +
+         "   |   Weekly total: $" + (int)ns.weeklyTotalCost() + "K", x + 14, y + 10);
+    fill(theme.SUCCESS);
+    text("Stamina " + (cur.staminaBonus >= 0 ? "+" : "") + (int)cur.staminaBonus +
+         "  Speed " + (cur.speedBonus >= 0 ? "+" : "") + (int)cur.speedBonus +
+         "  Recovery " + (cur.recoveryBonus >= 0 ? "+" : "") + (int)cur.recoveryBonus +
+         "  Injury Resist " + (cur.injuryResistance >= 0 ? "+" : "") + (int)cur.injuryResistance,
+         x + 14, y + 28);
+    fill(theme.TEXT_DIM); text("Hydration:", x + 14, y + 48);
+    theme.drawStatBar(x + 90, y + 44, 200, 8, ns.hydrationLevel, 100,
+                      ns.hydrationLevel > 60 ? theme.ACCENT2 : theme.DANGER);
+    y += 84;
+
+    // Supplements
+    fill(theme.TEXT); textSize(12); textAlign(LEFT, TOP); text("SUPPLEMENTS", x, y); y += 18;
+    ArrayList<Supplement> available = ns.getAvailableSupplements();
+    for (Supplement s : available) {
+      boolean active = false;
+      for (Supplement a : ns.activeSupplements) { if (a.name.equals(s.name)) { active = true; break; } }
+      boolean hov = theme.isHover(hoverX, hoverY, x, y, w, 40);
+      color sc = s.category.equals("Legal") ? theme.SUCCESS :
+                 s.category.equals("Gray Area") ? theme.WARNING : theme.DANGER;
+      fill(active ? sc : hov ? theme.PANEL_3 : theme.PANEL_2);
+      stroke(active || hov ? sc : theme.BORDER); strokeWeight(1);
+      rect(x, y, w, 40, 5); noStroke();
+      fill(active ? color(10, 12, 25) : theme.TEXT); textSize(12); textAlign(LEFT, CENTER);
+      text(s.name, x + 14, y + 20);
+      fill(active ? color(10, 12, 25) : sc); textSize(10); textAlign(LEFT, CENTER);
+      text(s.category, x + 200, y + 20);
+      fill(active ? color(10, 12, 25) : theme.TEXT_DIM); textAlign(RIGHT, CENTER);
+      text("$" + s.weeklyCost + "K/wk" + (active ? " — ACTIVE" : ""), x + w - 14, y + 20);
+      y += 46;
+    }
+  }
+
+  void onClick(int mx, int my) {
+    Player p = engine.state.player;
+    if (p == null || p.nutrition == null) return;
+    NutritionSystem ns = p.nutrition;
+    NutritionPlan[] plans = ns.getPlans();
+    float x = 30, y = 154, w = 700, pw = (w - plans.length * 6f) / plans.length;
+    // Plan card clicks
+    for (int i = 0; i < plans.length; i++) {
+      if (theme.isHover(mx, my, x + i * (pw + 6), y, pw, 90)) { ns.setPlan(i); return; }
+    }
+    // Supplement toggle clicks (y after plan cards + stat card + section header)
+    y += 106 + 84 + 18;
+    ArrayList<Supplement> available = ns.getAvailableSupplements();
+    for (Supplement s : available) {
+      if (theme.isHover(mx, my, x, y, w, 40)) {
+        boolean found = false;
+        for (int i = ns.activeSupplements.size() - 1; i >= 0; i--) {
+          if (ns.activeSupplements.get(i).name.equals(s.name)) {
+            ns.activeSupplements.remove(i); found = true; break;
+          }
+        }
+        if (!found) ns.activeSupplements.add(new Supplement(s.name, s.category, s.weeklyEffect, s.weeklyCost));
+        return;
+      }
+      y += 46;
+    }
+  }
+
+  void onHover(int mx, int my) { super.onHover(mx, my); }
+}
+
+// ============================================================
+// WORLD RANKINGS SCREEN  —  live world leaderboard
+// ============================================================
+/**
+ * WorldRankScreen — Shows the top 20 world-ranked players alongside the user's
+ *                   player, with rival head-to-head indicators.
+ * OOP role: Inheritance (extends BaseScreen)
+ * Collaborators: GameEngine, UITheme, Player
+ */
+class WorldRankScreen extends BaseScreen { // OOP: Inheritance — extends BaseScreen
+  // CARD_PAD and SECTION_GAP inherited from BaseScreen
+
+  WorldRankScreen(GameEngine e) { super(e); }
+
+  /** OOP: Polymorphism — identifies this screen for headers and navigation. */
+  String getScreenTitle() { return "WORLD RANKINGS"; } // OOP: Polymorphism
+
+  void render() {
+    renderScreenHeader(); // OOP: Inheritance — calls getScreenTitle() polymorphically
+    Player p = engine.state.player;
+    float x = 30, y = 70;
+    fill(theme.ACCENT); textSize(22); textAlign(LEFT, TOP);
+    text("WORLD RANKINGS", x, y);
+
+    y += 50;
+    fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, TOP);
+    text("RANK",   x,        y);
+    text("PLAYER", x +  70,  y);
+    text("NATION", x + 300,  y);
+    text("POINTS", x + 450,  y);
+
+    stroke(theme.BORDER);
+    line(x, y + 16, x + 600, y + 16);
+    noStroke();
+    y += 24;
+
+    ArrayList<WorldPlayer> wp = engine.ranking.worldPlayers;
+    for (int i = 0; i < min(20, wp.size()); i++) {
+      WorldPlayer w = wp.get(i);
+
+      // Check rival match
+      Rival matchRival = null;
+      if (engine.state.rivals != null) {
+        for (Rival rv : engine.state.rivals) {
+          if (rv.name.equals(w.name)) { matchRival = rv; break; }
+        }
+      }
+
+      if (i % 2 == 0) {
+        fill(theme.PANEL);
+        rect(x - 8, y - 2, 620, 28, 2);
+      }
+      // Rival flame indicator
+      if (matchRival != null) {
+        fill(theme.DANGER);
+        ellipse(x + 60, y + 12, 9, 9);
+      }
+      fill(i < 3 ? theme.ACCENT : theme.TEXT);
+      textSize(13); textAlign(LEFT, CENTER);
+      text("#" + w.ranking, x, y + 12);
+      text(w.name, x + 70, y + 12);
+      fill(theme.TEXT_DIM);
+      text(w.nationality, x + 300, y + 12);
+      fill(theme.TEXT);
+      text(w.points, x + 450, y + 12);
+      if (matchRival != null) {
+        fill(theme.DANGER); textSize(9); textAlign(LEFT, CENTER);
+        text("H2H: W" + matchRival.h2hWins + "-L" + matchRival.h2hLosses, x + 530, y + 12);
+      }
+      y += 30;
+    }
+
+    y += 10;
+    fill(theme.ACCENT, 40);
+    rect(x - 8, y - 2, 620, 28, 2);
+    fill(theme.ACCENT); textSize(13); textAlign(LEFT, CENTER);
+    if (p != null) {
+      text("-> #" + p.career.worldRanking + " " + p.name, x, y + 12);
+      fill(theme.TEXT_DIM); text(p.nationality, x + 300, y + 12);
+      fill(theme.TEXT);     text(p.career.rankingPoints, x + 450, y + 12);
+    }
+  }
+}
+
+
+// ============================================================
+// LifeScreen.pde
+// ============================================================
+
+/**
+ * LifeScreen — Primary gameplay screen with 3-column BitLife-style layout.
+ * OOP role: Inheritance (extends BaseScreen), Polymorphism (getScreenTitle)
+ * Collaborators: BaseScreen, UITheme, GameEngine, Player, Activity (OOP: Polymorphism)
+ */
+class LifeScreen extends BaseScreen {
+
+  ActivityCategory selectedCategory = null;
+  boolean hoverAgeUp = false;
+
+  // Layout constants (CARD_PAD and SECTION_GAP inherited from BaseScreen)
+  // Column layout — matches spec: left=280, mid=520, right=352
+  final float LP_X = 12,  LP_W = 280;
+  final float MP_X = 304, MP_W = 520;
+  final float RP_X = 836, RP_W = 352;
+  final float PY   = 62,  PH   = 710;
+
+  // Track event panel top so click detection always matches render
+  float eventPanelY = -1;
+
+  // Countdown frames to display tournament result card after a tournament ends
+  int tournamentResultDisplay = 0;
+
+  LifeScreen(GameEngine e) { super(e); }
+
+  // OOP: Polymorphism — override getScreenTitle from BaseScreen
+  String getScreenTitle() { return "YOUR LIFE"; } // OOP: Polymorphism
+
+  // ── Phase-aware category labels ───────────────────────────
+  String[] getCatLabels() {
+    LifePhase ph = engine.state.lifePhase;
+    if (ph == LifePhase.CHILDHOOD)    return new String[]{"PLAY","LEARN","FAMILY","HEALTH","POCKET $","SOCIAL"};
+    if (ph == LifePhase.EARLY_SCHOOL) return new String[]{"SPORT","STUDY","FAMILY","HEALTH","MONEY","SOCIAL"};
+    if (ph == LifePhase.TEEN)         return new String[]{"SPORT","STUDY","LOVE","HEALTH","MONEY","SOCIAL"};
+    if (ph == LifePhase.UNIVERSITY)   return new String[]{"SPORT","STUDY","LOVE","HEALTH","FINANCES","SOCIAL"};
+    return new String[]{"CAREER","TRAINING","LOVE & FAM","HEALTH","ASSETS","SOCIAL"};
+  }
+
+  String[][] getSubLabels() {
+    LifePhase ph = engine.state.lifePhase;
+    switch (ph) {
+      case CHILDHOOD:
+        return new String[][]{
+          {"Play Outside","Draw & Create","Watch Sports","Play Sport"},
+          {"Read Books","Do Homework","Explore Nature","Build Things"},
+          {"Family Time","Talk to Mom","Talk to Dad","Visit Family"},
+          {"Eat Healthy","Doctor Visit","Sleep Early","Rest Day"},
+          {"Save Allowance","Buy a Toy","Help at Home","Yard Sale"},
+          {"Make a Friend","Birthday Party","School Show","Join Club"}};
+      case EARLY_SCHOOL:
+        return new String[][]{
+          {"School Sports","Youth Training","Watch Pro Match","School Tournament"},
+          {"Study Hard","Library Time","Creative Project","Extra Tutoring"},
+          {"Hang with Friends","Call Parents","Family Dinner","Visit Family"},
+          {"Eat Healthy","Doctor Checkup","Physical Training","Rest Day"},
+          {"Do Chores","Save Up","Buy Equipment","Part-time Help"},
+          {"Post Clip Online","Local Event","Community Work","School Club"}};
+      case TEEN:
+        return new String[][]{
+          {"Youth Tournament","Approach Scout","Hire First Coach","Amateur Match"},
+          {"Intensive Drill","Light Practice","Mental Focus","Recovery Week"},
+          {"Go on a Date","Call Parents","Family Time","Date Together"},
+          {"Doctor Checkup","Start Therapy","Hit the Gym","Rest Day"},
+          {"Part-time Job","Buy Equipment","Save Up","First Investment"},
+          {"Post on Socials","Charity Work","Give Interview","Seek Sponsor"}};
+      case UNIVERSITY:
+        return new String[][]{
+          {"Collegiate Match","Approach Scout","Hire Coach","Study Film"},
+          {"Intensive Training","Light Practice","Mental Coaching","Recovery Week"},
+          {"Go on a Date","Call Parents","Family Dinner","Date Together"},
+          {"Doctor Checkup","Start Therapy","Hit the Gym","Spa Day"},
+          {"Part-time Job","Invest Savings","Apply Scholarship","Buy Equipment"},
+          {"Post on Socials","Charity Event","Give Interview","Seek Sponsor"}};
+      default: // PRO
+        return new String[][]{
+          {"Enter Tournament","Seek Sponsor","Hire Coach","Press Day"},
+          {"Intensive Training","Light Practice","Mental Coaching","Recovery Week"},
+          {"Go on a Date","Spend Time Together","Have a Child","Call Family"},
+          {"Doctor Checkup","Start Therapy","Hit the Gym","Spa Day"},
+          {"Buy Property","Invest Money","Buy a Car","Start Business"},
+          {"Post on Socials","Charity Event","Give Interview","Hire PR Manager"}};
+    }
+  }
+
+  String[][] getActionKeys() {
+    LifePhase ph = engine.state.lifePhase;
+    switch (ph) {
+      case CHILDHOOD:
+        return new String[][]{
+          {"play_outside","draw","watch_sport","play_sport"},
+          {"read","homework","explore","build"},
+          {"family_time","talk_mom","talk_dad","visit_family"},
+          {"eat_healthy","doctor_visit","sleep","rest"},
+          {"save_allowance","buy_toy","help_home","help_home"},
+          {"make_friend","make_friend","make_friend","join_club"}};
+      case EARLY_SCHOOL:
+        return new String[][]{
+          {"school_sports","youth_train","watch_pro","school_tourney"},
+          {"study_hard","library","creative","tutor"},
+          {"hangout","call_parents","family_dinner","family_time"},
+          {"eat_healthy","doctor_visit","phys_train","rest"},
+          {"chores","save_up","buy_equip","part_time_help"},
+          {"post_clip","local_event","community","school_club"}};
+      case TEEN:
+        return new String[][]{
+          {"youth_tourney","approach_scout","hire_first_coach","amateur_match"},
+          {"intensive","light","mental","recovery"},
+          {"date","call_parents","family_time","date_together"},
+          {"doctor","therapy","gym","rest"},
+          {"part_time_job","buy_equip","save_up","first_invest"},
+          {"post","charity","interview","sponsor"}};
+      case UNIVERSITY:
+        return new String[][]{
+          {"collegiate_match","approach_scout","hire_coach","study_film"},
+          {"intensive","light","mental","recovery"},
+          {"date","call_parents","family_dinner","date_together"},
+          {"doctor","therapy","gym","spa"},
+          {"part_time_job","invest","scholarship","buy_equip"},
+          {"post","charity","interview","sponsor"}};
+      default:
+        return new String[][]{
+          {"tournament","sponsor","coach","media"},
+          {"intensive","light","mental","recovery"},
+          {"date","propose","child","family"},
+          {"doctor","therapy","gym","spa"},
+          {"property","invest","car","business"},
+          {"post","charity","interview","pr"}};
+    }
+  }
+
+  // ── Main render ───────────────────────────────────────────
+  void render() {
+    // OOP: Polymorphism — renderScreenHeader() calls getScreenTitle()
+    // (skip for LifeScreen since we have a custom year/week header)
+    Player p = engine.state.player;
+    if (p == null) return;
+
+    if (engine.ai.hasNewEvent && engine.state.pendingEvent == null) {
+      engine.state.pendingEvent = engine.ai.pendingEvent;
+      engine.ai.hasNewEvent     = false;
+    }
+
+    // Replace pending event description with AI match moment narrative if available
+    if (engine.ai.hasNewMatchMoment && engine.state.pendingEvent != null) {
+      GameEvent aiMoment = engine.ai.pendingMatchMoment;
+      if (aiMoment != null && aiMoment.description != null && !aiMoment.description.isEmpty()) {
+        engine.state.liveNarrative = aiMoment.description;
+        engine.state.pendingEvent.description = aiMoment.description;
+        if (aiMoment.headline != null && !aiMoment.headline.isEmpty())
+          engine.state.pendingEvent.headline = aiMoment.headline;
+      }
+      engine.ai.hasNewMatchMoment  = false;
+      engine.ai.pendingMatchMoment = null;
+      engine.state.liveWaitingForAI = false;
+    }
+
+    theme.drawDotGrid();
+    drawLeftPanel(p);
+    drawMiddlePanel(p);
+    drawRightPanel(p);
+    // Keyboard hints bar
+    fill(8, 12, 22, 200); noStroke();
+    rect(0, height - 26, width, 26);
+    fill(130, 140, 160); textSize(10); textAlign(LEFT, CENTER);
+    text("SPACE  Age Up    1/2/3  Pick Choice    L  Life    T  Training    W  World    ESC  Menu", 20, height - 13);
+  }
+
+  // ════════════════════════════════════════════════════════
+  // LEFT PANEL — vitals + relationships
+  // ════════════════════════════════════════════════════════
+  void drawLeftPanel(Player p) {
+    float x = LP_X, y = PY, w = LP_W;
+    // Week / year banner above the stats card
+    fill(255, 200, 55); textSize(11); textAlign(LEFT, TOP);
+    text("YEAR " + engine.state.currentYear + "  ·  WEEK " + engine.state.currentWeek + " / 52", MP_X, PY - 22);
+    float yearPct = engine.state.currentWeek / 52.0;
+    fill(30, 40, 60); noStroke(); rect(MP_X, PY - 10, MP_W, 5, 3);
+    fill(255, 210, 60, 120); rect(MP_X, PY - 10, MP_W * yearPct, 5, 3);
+    theme.drawCard(x, y, w, PH);
+
+    // ── Athlete identity card ─────────────────────────────
+    LifePhase phase = engine.state.lifePhase;
+    SportConfig sc  = engine.state.sportConfig != null ? engine.state.sportConfig : getSportConfig(Sport.TENNIS);
+
+    // Avatar circle with sport color
+    color sCol = theme.sportColor(engine.state.currentSport);
+    fill(sCol, 40); noStroke(); ellipse(x + LP_W/2, y + 46, 72, 72);
+    fill(sCol, 80); ellipse(x + LP_W/2, y + 46, 56, 56);
+    fill(sCol); textSize(26); textAlign(CENTER, CENTER);
+    text(engine.state.currentSport == Sport.BASKETBALL ? "🏀" :
+         engine.state.currentSport == Sport.SOCCER ? "⚽" :
+         engine.state.currentSport == Sport.GOLF ? "⛳" :
+         engine.state.currentSport == Sport.BOXING ? "🥊" : "🎾",
+         x + LP_W/2, y + 48);
+    // Name below avatar
+    fill(theme.TEXT); textSize(17); textAlign(CENTER, TOP);
+    text(p.name, x + LP_W/2, y + 80);
+    // Phase + age badge
+    int pAge = p.age(engine.state.currentYear);
+    fill(theme.TEXT_DIM); textSize(10); textAlign(CENTER, TOP);
+    text("Age " + pAge + "  ·  " + engine.state.currentSport.toString(), x + LP_W/2, y + 102);
+    // Nationality + hometown sub-line
+    if (!p.nationality.isEmpty()) {
+      fill(theme.TEXT_DIM); textSize(8); textAlign(CENTER, TOP);
+      String loc = p.nationality + (!p.hometown.isEmpty() ? "  ·  " + p.hometown : "");
+      text(loc, x + LP_W/2, y + 118);
+    }
+
+    // Rank strip (PRO only)
+    if (phase == LifePhase.PRO) {
+      fill(theme.ACCENT, 22); noStroke(); rect(x + 14, y + 132, w - 28, 14, 7);
+      fill(theme.ACCENT); textSize(8); textAlign(CENTER, CENTER);
+      text(sc.rankLabel + " #" + p.career.worldRanking, x + w/2, y + 139);
+    }
+
+    y += 128;
+
+    // ── Life vitals ───────────────────────────────────────
+    if (y <= PY + PH - 30) { statBarIcon("❤", "HEALTH",    p.wellbeing, theme.DANGER,         x + 14, y, w - 28); y += 40; }
+    if (y <= PY + PH - 30) { statBarIcon("😊", "HAPPINESS", p.happiness, color(255, 210, 60), x + 14, y, w - 28); y += 40; }
+    if (y <= PY + PH - 30) { statBarIcon("🧠", "SMARTS",    p.smarts,    theme.ACCENT2,       x + 14, y, w - 28); y += 40; }
+    if (y <= PY + PH - 30) { statBarIcon("✨", "LOOKS",     p.looks,     theme.PURPLE,        x + 14, y, w - 28); y += 40; }
+
+    // ENERGY bar (inverse of fatigue)
+    float energy = 100 - p.form.fatigue;
+    color energyCol = energy > 60 ? theme.SUCCESS : theme.DANGER;
+    if (y <= PY + PH - 30) { statBarIcon("⚡", "ENERGY",    energy,      energyCol,           x + 14, y, w - 28); }
+    y += 40;
+
+    stroke(theme.BORDER); strokeWeight(1);
+    line(x + 14, y + 2, x + w - 14, y + 2); noStroke();
+    y += 12;
+
+    // ── PRO career stats ──────────────────────────────────
+    if (phase == LifePhase.PRO) {
+      String shortMajorLabel;
+      switch (engine.state.currentSport) {
+        case BASKETBALL: shortMajorLabel = "RINGS";  break;
+        case SOCCER:     shortMajorLabel = "CUPS";   break;
+        case GOLF:       shortMajorLabel = "MAJORS"; break;
+        case BOXING:     shortMajorLabel = "BELTS";  break;
+        default:         shortMajorLabel = "GS";     break;
+      }
+      fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP);
+      text("TITLES", x + 14, y); text(shortMajorLabel, x + 80, y); text("PRIZE", x + 116, y);
+      y += 12;
+      fill(theme.ACCENT); textSize(18); textAlign(LEFT, TOP); text("" + p.career.titlesWon, x + 14, y);
+      fill(theme.TEXT);   textSize(18); text("" + p.career.grandSlamTitles, x + 80, y);
+      fill(theme.SUCCESS); textSize(12); text(formatMoney(p.career.prizeMoney), x + 116, y);
+      y += 28;
+
+      fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("SAVINGS", x + 14, y); y += 11;
+      fill(theme.GOLD); textSize(22); textAlign(LEFT, TOP);
+      text("$" + (int)(p.finances.savings / 1000) + "K", x + 14, y); y += 28;
+
+      // Mental health badge
+      color mc = p.mentalHealth.stateColor();
+      fill(mc, 35); rect(x + 14, y, w - 28, 20, 4);
+      fill(mc); textSize(8); textAlign(CENTER, CENTER);
+      text("MENTAL: " + p.mentalHealth.stateLabel().toUpperCase(), x + w/2, y + 10); y += 26;
+
+      // Injury badge
+      if (p.health.status != InjuryStatus.HEALTHY) {
+        fill(theme.DANGER, 35); rect(x + 14, y, w - 28, 20, 4);
+        fill(theme.DANGER); textSize(8); textAlign(CENTER, CENTER);
+        text("INJURY: " + p.health.injuredPart + " (" + p.health.weeksRemaining + "wk)", x + w/2, y + 10); y += 26;
+      }
+
+      stroke(theme.BORDER); strokeWeight(1);
+      line(x + 14, y + 2, x + w - 14, y + 2); noStroke();
+      y += 10;
+
+      // ── RELATIONSHIPS section ─────────────────────────
+      if (y > PY + PH - 30) return;
+      fill(theme.FAMILY); textSize(9); textAlign(LEFT, TOP);
+      text("RELATIONSHIPS", x + 14, y); y += 14;
+
+      if (p.family.spouse != null) {
+        // Partner card
+        color relCol = p.family.status == RelationshipStatus.MARRIED ? theme.FAMILY :
+                       (p.family.status == RelationshipStatus.ENGAGED ? theme.ACCENT : theme.ACCENT2);
+        fill(relCol, 25); rect(x + 14, y, w - 28, 52, 5);
+        fill(relCol); textSize(9); textAlign(LEFT, TOP);
+        String statusLabel = p.family.status == RelationshipStatus.MARRIED ? "MARRIED" :
+                             p.family.status == RelationshipStatus.ENGAGED  ? "ENGAGED" : "DATING";
+        text(statusLabel, x + 18, y + 5);
+        fill(theme.TEXT); textSize(11); text(p.family.partnerName(), x + 18, y + 18);
+        // Happiness bar
+        fill(theme.TEXT_DIM); textSize(8); text("HAPPINESS", x + 18, y + 34);
+        theme.drawStatBar(x + 80, y + 30, w - 94, 8,
+          p.family.familyHappiness, 100,
+          p.family.familyHappiness > 60 ? theme.SUCCESS : (p.family.familyHappiness > 30 ? theme.ACCENT : theme.DANGER));
+        // Resentment warning
+        if (p.family.spouse.resentment > 50) {
+          fill(theme.DANGER); textSize(7); textAlign(RIGHT, TOP);
+          text("⚠ " + (int)p.family.spouse.resentment + "% resentful", x + w - 18, y + 5);
+        }
+        y += 58;
+
+        // Kids
+        if (!p.family.children.isEmpty()) {
+          for (Child c : p.family.children) {
+            fill(theme.ACCENT2, 20); rect(x + 14, y, w - 28, 20, 4);
+            fill(theme.ACCENT2); textSize(8); textAlign(LEFT, CENTER);
+            text("♦ " + c.name + "  (age " + c.age + ")", x + 18, y + 10);
+            theme.drawStatBar(x + w - 60, y + 7, 42, 6, c.happiness, 100, theme.SUCCESS);
+            y += 24;
+          }
+        }
+      } else {
+        fill(theme.TEXT_DIM, 120); rect(x + 14, y, w - 28, 28, 5);
+        fill(theme.TEXT_DIM); textSize(9); textAlign(CENTER, CENTER);
+        text("Single — use LOVE & FAM to date", x + w/2, y + 14);
+        y += 32;
+      }
+
+      // ── Parents ───────────────────────────────────────
+      if (p.parents != null) {
+        stroke(theme.BORDER); strokeWeight(1);
+        line(x + 14, y + 4, x + w - 14, y + 4); noStroke(); y += 10;
+        fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("PARENTS", x + 14, y); y += 12;
+
+        for (int pi = 0; pi < 2; pi++) {
+          Parent pr = pi == 0 ? p.parents.mom : p.parents.dad;
+          String lbl = pi == 0 ? "Mom" : "Dad";
+          color rc = pr.relationshipColor();
+          fill(rc, 20); rect(x + 14, y, w - 28, 18, 4);
+          fill(rc); textSize(8); textAlign(LEFT, CENTER);
+          text(lbl + ": " + pr.name, x + 18, y + 9);
+          textAlign(RIGHT, CENTER);
+          text(pr.relationshipLabel(), x + w - 18, y + 9);
+          y += 22;
+        }
+      }
+
+    } else {
+      // ── EARLY LIFE stats ─────────────────────────────
+      fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("SAVINGS", x + 14, y); y += 11;
+      fill(theme.GOLD); textSize(22); textAlign(LEFT, TOP);
+      text("$" + (int)(p.finances.savings / 1000) + "K", x + 14, y); y += 28;
+
+      if (p.parents != null) {
+        fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("PARENTS", x + 14, y); y += 12;
+        for (int pi = 0; pi < 2; pi++) {
+          Parent pr = pi == 0 ? p.parents.mom : p.parents.dad;
+          String lbl = pi == 0 ? "Mom" : "Dad";
+          color rc = pr.relationshipColor();
+          fill(rc, 20); rect(x + 14, y, w - 28, 20, 4);
+          fill(rc); textSize(8); textAlign(LEFT, CENTER);
+          text(lbl + ": " + pr.name, x + 18, y + 10);
+          textAlign(RIGHT, CENTER); text(pr.relationshipLabel(), x + w - 18, y + 10);
+          y += 24;
+        }
+      }
+
+      if (p.family.spouse != null) {
+        y += 4;
+        fill(theme.FAMILY, 25); rect(x + 14, y, w - 28, 24, 5);
+        fill(theme.FAMILY); textSize(9); textAlign(CENTER, CENTER);
+        text("♥  " + p.family.statusDisplay(), x + w/2, y + 12); y += 28;
+      }
+    }
+
+    // ── Sport attributes (compact) ─────────────────────
+    if (y > PY + PH - 30) return;
+    stroke(theme.BORDER); strokeWeight(1);
+    line(x + 14, y + 4, x + w - 14, y + 4); noStroke(); y += 10;
+    fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("SPORT ATTRIBUTES", x + 14, y); y += 12;
+
+    PlayerAttributes eff = p.effectiveAttributes();
+    String[] sn = sc.statNames;
+    int[] sv = {eff.serve, eff.forehand, eff.backhand, eff.volley, eff.speed, eff.stamina, eff.mental};
+    // Per-stat accent colors: s1=GOLD, s2=ACCENT2, s3=TEAL, s4=PURPLE, s5=SUCCESS, s6=SUCCESS, s7=FAMILY
+    color[] statColors = {theme.GOLD, theme.ACCENT2, theme.TEAL, theme.PURPLE, theme.SUCCESS, theme.SUCCESS, theme.FAMILY};
+    for (int i = 0; i < min(sn.length, 7); i++) {
+      if (y > PY + PH - 18) break;
+      String statIcon = statEmoji(sn[i]);
+      color barCol = statColors[i];
+      // Icon LEFT
+      fill(barCol); textSize(9); textAlign(LEFT, CENTER);
+      text(statIcon, x + 14, y + 6);
+      // Name label
+      fill(theme.TEXT_DIM); textSize(7); textAlign(LEFT, TOP);
+      text(sn[i], x + 26, y);
+      // Value RIGHT
+      fill(barCol); textSize(8); textAlign(RIGHT, TOP);
+      text("" + sv[i], x + w - 14, y);
+      // Thick bar h=8
+      if (sv[i] > 75)
+        theme.drawGlowBar(x + 26, y + 11, w - 40, 8, sv[i], 99, barCol);
+      else
+        theme.drawStatBar(x + 26, y + 11, w - 40, 8, sv[i], 99, barCol);
+      y += 22;
+    }
+    // Stat color legend
+    fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP);
+    text("■ Primary  ■ Physical  ■ Mental", x+14, y+4);
+  }
+
+  String statEmoji(String statName) {
+    String s = statName.toUpperCase();
+    if (s.contains("SHOOT") || s.contains("SERVE") || s.contains("DRIV") || s.contains("JAB")) return "🎯";
+    if (s.contains("DRIB") || s.contains("FOREHAND") || s.contains("IRON") || s.contains("POWER")) return "⚡";
+    if (s.contains("DEFENSE") || s.contains("BACKHAND") || s.contains("CHIP")) return "🛡";
+    if (s.contains("REBOUND") || s.contains("VOLLEY") || s.contains("PUTT") || s.contains("FOOT")) return "🔄";
+    if (s.contains("SPEED") || s.contains("PACE") || s.contains("ATHLET")) return "💨";
+    if (s.contains("STAMINA") || s.contains("CHIN") || s.contains("PHYS")) return "❤";
+    if (s.contains("MENTAL") || s.contains("IQ") || s.contains("VISION") || s.contains("PASS")) return "🧠";
+    return "●";
+  }
+
+  String phaseLabel(LifePhase ph) {
+    switch (ph) {
+      case CHILDHOOD:   return "CHILDHOOD";
+      case EARLY_SCHOOL: return "SCHOOL";
+      case TEEN:        return "TEENAGER";
+      case UNIVERSITY:  return "UNIVERSITY";
+      default:          return "PRO";
+    }
+  }
+
+  void statBar(String label, float val, color col, float x, float y, float w) {
+    fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text(label, x, y);
+    fill(col); textAlign(RIGHT, TOP); text((int)val + "%", x + w, y);
+    theme.drawStatBar(x, y + 11, w, 10, val, 100, col);
+  }
+
+  // BitLife-style icon + label stat bar (thick, h=14, rounded feel)
+  void statBarIcon(String icon, String label, float val, color col, float x, float y, float w) {
+    // Icon
+    fill(col); textSize(13); textAlign(LEFT, CENTER);
+    text(icon, x, y + 8);
+    // Label
+    fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP);
+    text(label, x + 18, y);
+    // Value right
+    fill(col); textSize(11); textAlign(RIGHT, TOP);
+    text((int)val + "%", x + w, y);
+    // Thick bar with rounded ends (h=14)
+    theme.drawStatBar(x + 18, y + 13, w - 18, 14, val, 100, col);
+  }
+
+  // ════════════════════════════════════════════════════════
+  // MIDDLE PANEL — life feed / active event card
+  // ════════════════════════════════════════════════════════
+  void drawMiddlePanel(Player p) {
+    float x = MP_X, y = PY, w = MP_W;
+
+    // Youth/school special rendering
+    int playerAge = engine.state.player.age(engine.state.currentYear);
+    if (playerAge < 18 && engine.state.lifePhase != null) {
+      drawYouthPanel(engine.state.player, MP_X, PY, MP_W);
+      return; // Skip normal middle panel for youth
+    }
+
+
+    // Tournament in-progress banner
+    boolean hasTournament = engine.state.activeTournament != null || engine.state.inLiveMatch;
+    if (hasTournament) {
+      drawTournamentBanner(x, y, w);
+      int bannerH;
+      if (engine.state.inLiveMatch) {
+        int logCount = engine.state.liveSegmentLog != null ? engine.state.liveSegmentLog.size() : 0;
+        bannerH = 42 + 64 + (logCount > 0 ? 34 : 0) + 30 + (engine.ai.isLoading ? 24 : 0) + 10;
+      } else {
+        int resultCount = engine.state.activeTournamentResults != null ? engine.state.activeTournamentResults.size() : 0;
+        bannerH = 80 + min(resultCount, 2) * 28 + 22;
+      }
+      y += bannerH;
+      eventPanelY = y;
+    }
+
+    // Show result card briefly after tournament ends
+    if (!hasTournament && engine.state.lastTournamentRun != null && tournamentResultDisplay == 0) {
+      tournamentResultDisplay = 180;
+    }
+    if (!hasTournament && engine.state.lastTournamentRun != null && tournamentResultDisplay > 0) {
+      tournamentResultDisplay--;
+      TournamentRun run = engine.state.lastTournamentRun;
+      color rCol = run.won ? color(245, 197, 24) : color(255, 77, 77);
+      fill(rCol, 25); noStroke(); rect(x, y, w, 60, 8);
+      fill(rCol, 200); noStroke(); rect(x, y, w, 4, 8, 8, 0, 0);
+      fill(rCol); textSize(18); textAlign(CENTER, CENTER);
+      text(run.won ? "CHAMPION — " + run.tournament.name : "ELIMINATED — " + run.tournament.name, x + w/2, y + 30);
+      y += 68;
+      if (tournamentResultDisplay == 0) engine.state.lastTournamentRun = null;
+    }
+
+    // AI loading bar at top
+    boolean isLoading = engine.ai.isLoading;
+    float eventY = y;
+    if (isLoading) {
+      // Animated loading card
+      theme.drawCard(x, eventY, w, 80, true);
+      float dotPhase = (frameCount * 0.08f) % (TWO_PI);
+      for (int d = 0; d < 3; d++) {
+        float dotAlpha = 128 + 127 * sin(dotPhase - d * 0.8);
+        fill(255, 210, 60, dotAlpha); noStroke();
+        ellipse(x + w/2 - 20 + d*20, eventY+44, 10, 10);
+      }
+      fill(theme.TEXT_DIM); textSize(11); textAlign(CENTER, TOP);
+      text("AI IS WRITING YOUR STORY...", x + w/2, eventY+14);
+      y += 86;
+    }
+
+    eventPanelY = y;  // save so onClick always uses the same origin
+
+    // OOP: Inheritance — inherits drawEventPanel, sectionHeader, formatMoney from BaseScreen
+    if (engine.state.pendingEvent != null) {
+      // Context header — show AI narrative loading hint if waiting for match moment
+      if (y - 18 >= 40) {
+        if (engine.state.liveWaitingForAI) {
+          float dotPhase2 = (frameCount * 0.06f) % (TWO_PI);
+          float dotAlpha2 = 128 + 127 * sin(dotPhase2);
+          fill(255, 200, 80, dotAlpha2); textSize(10); textAlign(LEFT, TOP);
+          text("● GENERATING MATCH NARRATIVE...", x + 14, y - 18);
+        } else {
+          fill(80, 100, 140); textSize(10); textAlign(LEFT, TOP);
+          text("▼  CHOOSE YOUR RESPONSE", x + 14, y - 18);
+        }
+      }
+      y += 14;
+      eventPanelY = y;
+      drawEventPanel(engine.state.pendingEvent, x, y, w);
+    } else {
+      // Context header (no pending event)
+      if (isLoading) {
+        fill(255, 210, 60); textSize(10); textAlign(LEFT, TOP);
+        text("● GENERATING YOUR STORY...", x + 14, y - 18);
+      } else {
+        fill(80, 100, 140); textSize(10); textAlign(LEFT, TOP);
+        text("▶  PRESS SPACE TO ADVANCE", x + 14, y - 18);
+      }
+      float cardH = PH - (isLoading ? 52 : 0);
+      theme.drawCard(x, y, w, cardH);
+
+      // Last event banner
+      if (!engine.state.lastEvent.isEmpty()) {
+        fill(theme.ACCENT, 22); noStroke(); rect(x + 10, y + 10, w - 20, 30, 4);
+        fill(theme.ACCENT); textSize(10); textAlign(LEFT, CENTER);
+        text("» " + engine.state.lastEvent, x + 20, y + 25);
+        y += 44;
+      } else { y += 10; }
+
+      // Life feed header
+      fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("LIFE FEED", x + 14, y + 6);
+      stroke(theme.BORDER); strokeWeight(1);
+      line(x + 14, y + 18, x + w - 14, y + 18); noStroke();
+      y += 24;
+
+      ArrayList<String> feed = p.lifeEvents;
+      if (feed.isEmpty()) {
+        fill(theme.TEXT_DIM); textSize(14); textAlign(CENTER, CENTER);
+        text("Your story begins here.", x + w/2, y + 90);
+        fill(theme.TEXT_DIM); textSize(10); textAlign(CENTER, CENTER);
+        text("Press SPACE or click AGE UP  ·  use activities on the right", x + w/2, y + 114);
+      } else {
+        float fy = y;
+        for (int i = 0; i < feed.size(); i++) {
+          if (fy > PY + PH - 62 - 14) break;
+          String entry = feed.get(i);
+          color dot = feedColor(entry);
+          if (i == 0) { fill(theme.PANEL_2); rect(x + 8, fy - 2, w - 16, 26, 3); }
+          fill(dot); noStroke(); ellipse(x + 20, fy + 11, 7, 7);
+          fill(i == 0 ? theme.TEXT : theme.TEXT_DIM);
+          textSize(10); textAlign(LEFT, TOP);
+          text(entry, x + 32, fy + 1);
+          fy += (i == 0 ? 28 : 22);
+        }
+      }
+
+      // Recent results strip
+      if (engine.state.lifePhase == LifePhase.PRO && !p.career.recentResults.isEmpty()) {
+        float ry = PY + PH - 140;
+        stroke(theme.BORDER); line(x + 14, ry, x + w - 14, ry); noStroke();
+        ry += 8;
+        fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("RECENT RESULTS", x + 14, ry); ry += 14;
+        int shown = min(3, p.career.recentResults.size());
+        for (int i = 0; i < shown; i++) {
+          MatchResult r = p.career.recentResults.get(i);
+          fill(r.playerWon ? color(15, 45, 25) : color(45, 15, 15)); rect(x + 8, ry, w - 16, 26, 3);
+          fill(r.playerWon ? theme.SUCCESS : theme.DANGER); textSize(9); textAlign(LEFT, CENTER);
+          text(r.playerWon ? "W" : "L", x + 18, ry + 13);
+          fill(theme.TEXT); textAlign(LEFT, CENTER); text(r.tournamentName + " " + r.round, x + 34, ry + 13);
+          fill(theme.TEXT_DIM); textAlign(RIGHT, CENTER); text(r.score + " +" + r.rankingPointsAwarded + "pts", x + w - 14, ry + 13);
+          ry += 30;
+        }
+      }
+    }
+  }
+
+  // ════════════════════════════════════════════════════════
+  // YOUTH PANEL — banner + life feed for under-18 players
+  // ════════════════════════════════════════════════════════
+  void drawYouthPanel(Player p, float x, float startY, float w) {
+    int pAge = p.age(engine.state.currentYear);
+
+    // Phase banner
+    color phCol = pAge < 10 ? theme.TEAL : (pAge < 14 ? theme.ACCENT2 : theme.GOLD);
+    String phLabel = pAge < 6 ? "🧒 CHILDHOOD" : (pAge < 10 ? "⚽ YOUTH SPORTS" : (pAge < 14 ? "🏫 MIDDLE SCHOOL" : "🎓 HIGH SCHOOL VARSITY"));
+    fill(phCol); textSize(20); textAlign(LEFT, TOP);
+    text(phLabel, x, startY);
+    // Age badge pill
+    String ageBadge = "AGE " + pAge;
+    textSize(10);
+    float badgeW = textWidth(ageBadge) + 16;
+    fill(phCol); noStroke(); rect(x + w - badgeW, startY, badgeW, 22, 11);
+    fill(color(10, 12, 18)); textSize(10); textAlign(CENTER, CENTER);
+    text(ageBadge, x + w - badgeW / 2, startY + 11);
+    fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, TOP);
+    String rankStr = (p.career.juniorRanking > 0 && p.career.juniorRanking < 9999)
+      ? "#" + p.career.juniorRanking + " in " + p.career.ageGroup + " Division"
+      : "Unranked";
+    text(rankStr + "  •  " + p.career.currentOrg, x, startY + 26);
+
+    float adjustedY = startY + 50;
+
+    // College offers banner for 16+
+    if (pAge >= 16 && p.academic != null && !p.academic.offers.isEmpty()) {
+      theme.drawAccentCard(x, adjustedY, w, 50, theme.GOLD);
+      fill(theme.GOLD); textSize(13); textAlign(LEFT, CENTER);
+      text("🎓 " + p.academic.offers.size() + " COLLEGE OFFERS PENDING", x + 14, adjustedY + 25);
+      fill(theme.TEXT_DIM); textSize(10); textAlign(RIGHT, CENTER);
+      text("See Life tab for details →", x + w - 14, adjustedY + 25);
+      adjustedY += 58;
+    }
+
+    // If an event is pending, show the event panel instead of the life feed
+    if (engine.state.pendingEvent != null) {
+      adjustedY = min(adjustedY, startY + PH - 200); // clamp so event card fits
+      eventPanelY = adjustedY;  // save so onClick click detection uses the correct Y
+      if (adjustedY - 18 >= startY) {
+        fill(80, 100, 140); textSize(10); textAlign(LEFT, TOP);
+        text("▼  CHOOSE YOUR RESPONSE", x + 14, adjustedY - 18);
+      }
+      drawEventPanel(engine.state.pendingEvent, x, adjustedY, w);
+      return;
+    }
+
+    // Card background for the rest of the panel
+    float cardH = PH - (adjustedY - startY);
+    theme.drawCard(x, adjustedY, w, cardH);
+
+    // Last event banner
+    float fy = adjustedY + 10;
+    if (!engine.state.lastEvent.isEmpty()) {
+      fill(theme.ACCENT, 22); noStroke(); rect(x + 10, fy, w - 20, 30, 4);
+      fill(theme.ACCENT); textSize(10); textAlign(LEFT, CENTER);
+      text("» " + engine.state.lastEvent, x + 20, fy + 15);
+      fy += 38;
+    }
+
+    // Life feed header
+    fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("LIFE FEED", x + 14, fy + 6);
+    stroke(theme.BORDER); strokeWeight(1);
+    line(x + 14, fy + 18, x + w - 14, fy + 18); noStroke();
+    fy += 26;
+
+    ArrayList<String> feed = p.lifeEvents;
+    if (feed.isEmpty()) {
+      fill(theme.TEXT_DIM); textSize(14); textAlign(CENTER, CENTER);
+      text("Your story begins here.", x + w / 2, fy + 60);
+      fill(theme.TEXT_DIM); textSize(10); textAlign(CENTER, CENTER);
+      text("Press SPACE or click AGE UP  ·  use activities on the right", x + w / 2, fy + 84);
+    } else {
+      for (int i = 0; i < feed.size(); i++) {
+        if (fy > startY + PH - 24) break;
+        String entry = feed.get(i);
+        color dot = feedColor(entry);
+        if (i == 0) { fill(theme.PANEL_2); rect(x + 8, fy - 2, w - 16, 26, 3); }
+        fill(dot); noStroke(); ellipse(x + 20, fy + 11, 7, 7);
+        fill(i == 0 ? theme.TEXT : theme.TEXT_DIM);
+        textSize(10); textAlign(LEFT, TOP);
+        text(entry, x + 32, fy + 1);
+        fy += (i == 0 ? 28 : 22);
+      }
+    }
+  }
+
+  color feedColor(String e) {
+    String s = e.toLowerCase();
+    if (s.contains("won") || s.contains("title") || s.contains("champion") || s.contains("graduated")) return theme.ACCENT;
+    if (s.contains("born") || s.contains("married") || s.contains("partner") || s.contains("dating") || s.contains("engaged") || s.contains("child") || s.contains("love")) return theme.FAMILY;
+    if (s.contains("injur") || s.contains("hospital") || s.contains("legal") || s.contains("charged")) return theme.DANGER;
+    if (s.contains("$") || s.contains("deal") || s.contains("invest") || s.contains("pts") || s.contains("money")) return theme.SUCCESS;
+    if (s.contains("mom") || s.contains("dad") || s.contains("parent") || s.contains("family")) return theme.FAMILY;
+    return theme.ACCENT2;
+  }
+
+  // ════════════════════════════════════════════════════════
+  // TOURNAMENT BANNER — shows bracket progress in middle panel
+  // ════════════════════════════════════════════════════════
+  void drawTournamentBanner(float x, float y, float w) {
+    Tournament t = engine.state.liveTournament != null ? engine.state.liveTournament : engine.state.activeTournament;
+    if (t == null) return;
+
+    color tCol = t.tier == TournamentTier.GRAND_SLAM   ? color(245,197,24) :
+                 t.tier == TournamentTier.MASTERS_1000  ? color(155,127,255) : theme.ACCENT;
+
+    // ── Tournament name header ───────────────────────
+    fill(tCol, 25); noStroke(); rect(x, y, w, 36, 6);
+    fill(tCol, 180); noStroke(); rect(x, y, w, 4, 6,6,0,0);
+    fill(tCol); textSize(13); textAlign(LEFT, CENTER);
+    text("🏆  " + t.name.toUpperCase(), x + 14, y + 18);
+
+    // Round label right
+    RoundName curRound = engine.state.liveRound != null ? engine.state.liveRound :
+                         (engine.state.activeTournamentRounds != null && engine.state.activeTournamentRoundIdx < engine.state.activeTournamentRounds.length
+                          ? engine.state.activeTournamentRounds[engine.state.activeTournamentRoundIdx] : null);
+    if (curRound != null) {
+      fill(theme.TEXT_DIM); textSize(9); textAlign(RIGHT, CENTER);
+      text(roundDisplayName(curRound), x + w - 14, y + 18);
+    }
+    y += 42;
+
+    // ── If live match: show scoreboard ───────────────
+    if (engine.state.inLiveMatch) {
+      drawLiveMatchScoreboard(x, y, w, t, tCol);
+      return;
+    }
+
+    // ── Otherwise: show round progress dots (existing code) ──
+    RoundName[] rounds = engine.state.activeTournamentRounds;
+    int roundIdx = engine.state.activeTournamentRoundIdx;
+    ArrayList<MatchResult> results = engine.state.activeTournamentResults;
+    if (rounds == null) return;
+
+    float dotSpacing = min(w / (float)(rounds.length + 1), 56);
+    float dotStartX = x + (w - dotSpacing * (rounds.length - 1)) / 2;
+    for (int i = 0; i < rounds.length; i++) {
+      float dx = dotStartX + i * dotSpacing;
+      float dotY = y + 12;
+      boolean done    = results != null && i < results.size();
+      boolean current = i == roundIdx;
+      boolean won     = done && results.get(i).playerWon;
+      if (i > 0) {
+        stroke(done ? tCol : color(40,50,70)); strokeWeight(2);
+        line(dotStartX + (i-1)*dotSpacing + 8, dotY, dx - 8, dotY);
+        noStroke();
+      }
+      color dotCol = current ? tCol : (won ? theme.SUCCESS : (done ? theme.DANGER : color(40,50,70)));
+      if (current) { fill(dotCol, 40); ellipse(dx, dotY, 22, 22); }
+      fill(dotCol); ellipse(dx, dotY, done || current ? 14 : 10, done || current ? 14 : 10);
+      fill(current ? tCol : (done ? (won ? theme.SUCCESS : theme.DANGER) : theme.TEXT_DIM));
+      textSize(7); textAlign(CENTER, TOP);
+      text(rounds[i].toString(), dx, dotY + 9);
+    }
+    y += 34;
+
+    // Past match results compact rows
+    if (results != null && !results.isEmpty()) {
+      fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("RESULTS", x + 14, y); y += 14;
+      int showMax = min(results.size(), 2);
+      for (int i = results.size()-1; i >= results.size()-showMax; i--) {
+        MatchResult r = results.get(i);
+        fill(r.playerWon ? color(15,42,20) : color(42,15,15)); noStroke(); rect(x+8, y, w-16, 24, 3);
+        fill(r.playerWon ? theme.SUCCESS : theme.DANGER); textSize(10); textAlign(LEFT, CENTER);
+        text(r.playerWon ? "W" : "L", x+18, y+12);
+        fill(theme.TEXT); textSize(9); textAlign(LEFT, CENTER);
+        String rndStr = r.round != null ? r.round.toString() : "";
+        text(rndStr + "  vs " + (r.playerWon ? r.loserName : r.winnerName), x+34, y+12);
+        fill(theme.TEXT_DIM); textAlign(RIGHT, CENTER);
+        text("+" + r.rankingPointsAwarded + "pts", x+w-12, y+12);
+        y += 28;
+      }
+    }
+
+    stroke(theme.BORDER); strokeWeight(1);
+    line(x+14, y+4, x+w-14, y+4); noStroke();
+  }
+
+  // ════════════════════════════════════════════════════════
+  // LIVE MATCH SCOREBOARD — shown inside drawTournamentBanner
+  // ════════════════════════════════════════════════════════
+  void drawLiveMatchScoreboard(float x, float y, float w, Tournament t, color tCol) {
+    Player p = engine.state.player;
+    OpponentProfile opp = engine.state.liveOpp;
+    if (opp == null) return;
+    int pSets = engine.state.livePlayerSets;
+    int oSets = engine.state.liveOppSets;
+    int toWin = engine.state.liveSegmentsToWin;
+
+    // ── Score row: Player vs Opponent ────────────────
+    float scoreH = 56;
+    fill(color(16,20,30)); noStroke(); rect(x, y, w, scoreH, 6);
+
+    // Player side (left)
+    fill(pSets > oSets ? tCol : theme.TEXT_DIM);
+    textSize(11); textAlign(LEFT, CENTER);
+    text(p.name, x + 12, y + 18);
+    fill(pSets >= toWin ? tCol : theme.TEXT);
+    textSize(28); textAlign(LEFT, CENTER);
+    text("" + pSets, x + 12, y + 42);
+
+    // VS centre
+    fill(theme.TEXT_DIM); textSize(9); textAlign(CENTER, CENTER);
+    text("VS", x + w/2, y + 28);
+
+    // Opponent side (right)
+    fill(oSets > pSets ? color(255,77,77) : theme.TEXT_DIM);
+    textSize(11); textAlign(RIGHT, CENTER);
+    text(opp.name, x + w - 12, y + 18);
+    fill(oSets >= toWin ? color(255,77,77) : theme.TEXT);
+    textSize(28); textAlign(RIGHT, CENTER);
+    text("" + oSets, x + w - 12, y + 42);
+
+    // "Best of N" label
+    fill(theme.TEXT_DIM); textSize(8); textAlign(CENTER, CENTER);
+    String formatStr = t.sport == Sport.TENNIS
+      ? (toWin == 3 ? "Best of 5" : "Best of 3")
+      : (t.sport == Sport.BASKETBALL ? "4 Quarters"
+      : t.sport == Sport.SOCCER ? "2 Halves" : "Match");
+    text(formatStr, x + w/2, y + 46);
+    y += scoreH + 8;
+
+    // ── Segment score pills ──────────────────────────
+    ArrayList<String> log = engine.state.liveSegmentLog;
+    if (log != null && !log.isEmpty()) {
+      float pillX = x + 8;
+      for (int i = 0; i < log.size(); i++) {
+        String entry = log.get(i);
+        boolean won = entry.contains("✓");
+        color pillCol = won ? theme.SUCCESS : theme.DANGER;
+        textSize(8);
+        float pillW = textWidth(entry) + 14;
+        if (pillX + pillW > x + w - 8) break; // don't overflow
+        fill(pillCol, 30); noStroke(); rect(pillX, y, pillW, 20, 10);
+        fill(pillCol); textAlign(LEFT, CENTER); text(entry, pillX + 7, y + 10);
+        pillX += pillW + 6;
+      }
+      y += 26;
+    }
+
+    // ── Current segment label ────────────────────────
+    int seg = engine.state.liveSegment;
+    String curSeg;
+    switch(t.sport) {
+      case TENNIS:     curSeg = "SET " + (seg+1); break;
+      case BASKETBALL: curSeg = "Q" + (seg+1);    break;
+      case SOCCER:     curSeg = seg==0 ? "1ST HALF" : "2ND HALF"; break;
+      case GOLF:       curSeg = seg==0 ? "FRONT 9" : "BACK 9";   break;
+      case BOXING:     curSeg = "ROUNDS " + (seg*4+1) + "-" + (seg*4+4); break;
+      default:         curSeg = "PERIOD " + (seg+1);
+    }
+    fill(tCol); textSize(11); textAlign(LEFT, TOP);
+    text("▶  " + curSeg, x + 8, y + 4);
+
+    // Opp ranking badge
+    fill(theme.TEXT_DIM); textSize(8); textAlign(RIGHT, TOP);
+    text("opp. #" + opp.ranking, x + w - 8, y + 4);
+    y += 20;
+
+    // ── AI loading indicator ─────────────────────────
+    if (engine.ai.isLoading) {
+      float dotPhase = (frameCount * 0.07f) % TWO_PI;
+      for (int d = 0; d < 3; d++) {
+        float alpha = 100 + 80 * sin(dotPhase - d * 0.9f);
+        fill(tCol, alpha); noStroke(); ellipse(x + 20 + d*12, y + 8, 7, 7);
+      }
+      fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP);
+      text("Writing match commentary...", x + 56, y + 4);
+      y += 20;
+    }
+
+    // Separator
+    stroke(theme.BORDER); strokeWeight(1);
+    line(x+8, y+2, x+w-8, y+2); noStroke();
+  }
+
+  String roundDisplayName(RoundName r) {
+    if (r == null) return "?";
+    switch (r) {
+      case F:    return "FINAL";
+      case SF:   return "SEMI-FINAL";
+      case QF:   return "QUARTER-FINAL";
+      case R16:  return "ROUND OF 16";
+      case R32:  return "ROUND OF 32";
+      case R64:  return "ROUND OF 64";
+      case R128: return "ROUND OF 128";
+      default:   return r.toString();
+    }
+  }
+
+  // ════════════════════════════════════════════════════════
+  // RIGHT PANEL — activity grid + Age Up
+  // ════════════════════════════════════════════════════════
+  void drawRightPanel(Player p) {
+    float x = RP_X, w = RP_W, y = PY;
+    theme.drawCard(x, y, w, PH);
+
+    // AGE UP button at bottom
+    float btnY = PY + PH - 62;
+    hoverAgeUp = theme.isHover(hoverX, hoverY, x + 10, btnY, w - 20, 50);
+    boolean eventPending = engine.state.pendingEvent != null;
+    if (eventPending) {
+      // Dimmed "make a choice first" state
+      fill(color(30, 30, 30)); stroke(theme.BORDER); strokeWeight(1);
+      rect(x + 10, btnY, w - 20, 50, 6); noStroke();
+      fill(color(100, 110, 130)); textSize(12); textAlign(CENTER, CENTER);
+      text("⬆ MAKE A CHOICE FIRST", x + w/2, btnY + 25);
+    } else {
+      // Breathing glow animation
+      float breathe = sin(frameCount * 0.06f); // OOP: Animation state
+      float strokeW = 1.5f + breathe * 1.5f;
+      float pulse = (sin(frameCount * 0.08f) + 1) * 0.5f;
+      color glowCol = lerpColor(color(20, 60, 20), color(60, 180, 60), pulse);
+      color btnFill = hoverAgeUp ? theme.ACCENT : glowCol;
+      fill(btnFill); stroke(theme.ACCENT); strokeWeight(hoverAgeUp ? 3 : strokeW);
+      rect(x + 10, btnY, w - 20, 50, 6); noStroke();
+      fill(hoverAgeUp ? color(10, 12, 22) : theme.ACCENT);
+      textSize(16); textAlign(CENTER, CENTER);
+      String btnLabel = engine.state.lifePhase == LifePhase.PRO ? "► AGE UP  [SPACE]" : "► NEXT YEAR  [SPACE]";
+      text(btnLabel, x + w/2, btnY + 25);
+    }
+    fill(theme.TEXT_DIM); textSize(8); textAlign(CENTER, TOP);
+    text(engine.state.currentYear + "  ·  Age " + p.age(engine.state.currentYear), x + w/2, btnY + 54);
+
+    // Activities header
+    fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP);
+    text("ACTIVITIES", x + 14, y + 12);
+    float ay = y + 28;
+
+    if (selectedCategory == null) drawActivityGrid(x + 10, ay, w - 20);
+    else                          drawSubMenu(x + 10, ay, w - 20);
+
+    // Overview mini-stats
+    float sumY = y + 28 + 248;
+    fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("OVERVIEW", x + 14, sumY); sumY += 12;
+    boolean isPro = engine.state.lifePhase == LifePhase.PRO;
+    float overviewH = isPro ? 78 : 78;
+    fill(theme.PANEL); stroke(theme.BORDER); strokeWeight(1); rect(x + 10, sumY, w - 20, overviewH, 4); noStroke(); sumY += 8;
+
+    // ── 3-stat summary row ────────
+    if (isPro) {
+      // Three big stats: RANKING  WEALTH  FAME/PTS
+      float colW = (w - 20) / 3f;
+      fill(color(215, 225, 245)); textSize(22); textAlign(CENTER, TOP);
+      text("#" + p.career.worldRanking, x + 10 + colW * 0.5f, sumY + 2);
+      fill(theme.TEXT_DIM); textSize(9); textAlign(CENTER, TOP);
+      text("RANKING", x + 10 + colW * 0.5f, sumY + 26);
+      stroke(theme.BORDER); strokeWeight(1);
+      line(x + 10 + colW, sumY + 4, x + 10 + colW, sumY + 38); noStroke();
+      fill(theme.GOLD); textSize(22); textAlign(CENTER, TOP);
+      text("$" + (int)(p.finances.savings / 1000) + "K", x + 10 + colW * 1.5f, sumY + 2);
+      fill(theme.TEXT_DIM); textSize(9); textAlign(CENTER, TOP);
+      text("WEALTH", x + 10 + colW * 1.5f, sumY + 26);
+      stroke(theme.BORDER); strokeWeight(1);
+      line(x + 10 + colW * 2, sumY + 4, x + 10 + colW * 2, sumY + 38); noStroke();
+      int fameStar = (int)(min(100, (p.socialMedia.followers / 10000000f) * 100));
+      fill(theme.ACCENT2); textSize(22); textAlign(CENTER, TOP);
+      text("★" + fameStar, x + 10 + colW * 2.5f, sumY + 2);
+      fill(theme.TEXT_DIM); textSize(9); textAlign(CENTER, TOP);
+      text("FAME", x + 10 + colW * 2.5f, sumY + 26);
+      // Energy + confidence sub-row
+      float eY = sumY + 44;
+      float rowEnergy = 100 - p.form.fatigue;
+      color eCol = rowEnergy > 60 ? theme.SUCCESS : theme.DANGER;
+      fill(theme.TEXT_DIM); textSize(7); textAlign(LEFT, TOP); text("ENERGY", x + 18, eY);
+      fill(eCol); textSize(7); textAlign(RIGHT, TOP); text((int)rowEnergy + "%", x + w/2 - 8, eY);
+      theme.drawStatBar(x + 18, eY + 10, w/2 - 28, 6, rowEnergy, 100, eCol);
+      fill(theme.TEXT_DIM); textSize(7); textAlign(LEFT, TOP); text("CONFID.", x + w/2 + 4, eY);
+      theme.drawStatBar(x + w/2 + 4, eY + 10, w/2 - 28, 6, p.form.confidence, 100, theme.SUCCESS);
+    } else {
+      float colW2 = (w - 20) / 3f;
+      fill(theme.ACCENT2); textSize(20); textAlign(CENTER, TOP);
+      text("" + (int)p.smarts, x + 10 + colW2 * 0.5f, sumY + 2);
+      fill(theme.TEXT_DIM); textSize(8); textAlign(CENTER, TOP);
+      text("SMARTS", x + 10 + colW2 * 0.5f, sumY + 26);
+      stroke(theme.BORDER); strokeWeight(1);
+      line(x + 10 + colW2, sumY + 4, x + 10 + colW2, sumY + 38); noStroke();
+      fill(theme.GOLD); textSize(20); textAlign(CENTER, TOP);
+      text("$" + (int)(p.finances.savings / 1000) + "K", x + 10 + colW2 * 1.5f, sumY + 2);
+      fill(theme.TEXT_DIM); textSize(8); textAlign(CENTER, TOP);
+      text("SAVINGS", x + 10 + colW2 * 1.5f, sumY + 26);
+      stroke(theme.BORDER); strokeWeight(1);
+      line(x + 10 + colW2 * 2, sumY + 4, x + 10 + colW2 * 2, sumY + 38); noStroke();
+      int relScore2 = p.family.spouse != null ? (int)p.family.familyHappiness :
+                      (p.parents != null ? (int)((p.parents.mom.relationship + p.parents.dad.relationship) / 2) : 0);
+      fill(theme.FAMILY); textSize(20); textAlign(CENTER, TOP);
+      text("" + relScore2, x + 10 + colW2 * 2.5f, sumY + 2);
+      fill(theme.TEXT_DIM); textSize(8); textAlign(CENTER, TOP);
+      text("FAMILY", x + 10 + colW2 * 2.5f, sumY + 26);
+      if (p.parents != null) {
+        fill(theme.TEXT_DIM); textSize(7); textAlign(CENTER, TOP);
+        text("Mom " + (int)p.parents.mom.relationship + " / Dad " + (int)p.parents.dad.relationship, x + w/2, sumY + 54);
+      }
+    }
+
+    // ── BitLife-style life event feed ────────────
+    float feedY = sumY + overviewH + 8;
+    float feedH = PY + PH - 62 - feedY - 6;
+    if (feedH > 30) {
+      fill(theme.PANEL_2); noStroke(); rect(x + 10, feedY, w - 20, feedH, 4);
+      fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text("LIFE FEED", x + 18, feedY + 6);
+      stroke(theme.BORDER); strokeWeight(1);
+      line(x + 18, feedY + 18, x + w - 18, feedY + 18); noStroke();
+      float fy = feedY + 24;
+      ArrayList<String> feed = new ArrayList<String>();
+      ArrayList<String> hist = p.career.careerHistory;
+      for (int i = max(0, hist.size() - 6); i < hist.size(); i++) feed.add(hist.get(i));
+      if (feed.isEmpty()) {
+        for (int i = max(0, p.lifeEvents.size() - 6); i < p.lifeEvents.size(); i++) feed.add(p.lifeEvents.get(i));
+      }
+      for (int i = feed.size() - 1; i >= 0 && fy < feedY + feedH - 14; i--) {
+        String entry = feed.get(i);
+        color bullet = entry.contains("Won") || entry.contains("title") ? color(255, 210, 60) :
+                       entry.contains("injur") ? color(240, 70, 70) :
+                       entry.contains("partner") || entry.contains("married") || entry.contains("love") ? color(255, 100, 175) :
+                       entry.contains("college") || entry.contains("school") ? color(75, 165, 255) :
+                       color(60, 80, 120);
+        fill(bullet); noStroke(); ellipse(x + 20, fy + 8, 6, 6);
+        fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, TOP);
+        String shortEntry = entry.length() > 44 ? entry.substring(0, 41) + "..." : entry;
+        text(shortEntry, x + 30, fy + 1);
+        fy += 22;
+      }
+      if (feed.isEmpty()) {
+        fill(theme.TEXT_DIM); textSize(10); textAlign(CENTER, CENTER);
+        text("No events yet", x + w/2, feedY + feedH / 2);
+      }
+    }
+  }
+
+  void drawActivityGrid(float x, float y, float w) {
+    String[] labels = getCatLabels();
+    color[] cols = {theme.ACCENT, theme.ACCENT2, theme.FAMILY, theme.SUCCESS, theme.TEXT_GOLD, theme.PURPLE};
+    String[] icons = {"★", "⚡", "♥", "✚", "$", "✦"};
+    float bw = (w - 8) / 2f, bh = 80;
+    boolean inTournament = engine.state.activeTournament != null || engine.state.inLiveMatch;
+    for (int i = 0; i < 6; i++) {
+      int col = i % 2, row = i / 2;
+      float bx = x + col * (bw + 8);
+      float by = y + row * (bh + 6);
+      // Dim the career button (index 0) while a tournament is in progress
+      if (i == 0 && inTournament) {
+        fill(color(30, 30, 35)); stroke(color(60, 60, 70)); strokeWeight(1);
+        rect(bx, by, bw, bh, 8); noStroke();
+        fill(color(80, 90, 100)); textSize(10); textAlign(CENTER, CENTER);
+        text("IN PROGRESS", bx + bw/2, by + bh/2);
+        continue;
+      }
+      boolean hov = theme.isHover(hoverX, hoverY, bx, by, bw, bh);
+      fill(hov ? cols[i] : theme.PANEL_2);
+      stroke(cols[i]); strokeWeight(hov ? 2 : 1);
+      rect(bx, by, bw, bh, 8); noStroke();
+      fill(hov ? color(10, 12, 22) : cols[i]);
+      textSize(20); textAlign(CENTER, CENTER); text(icons[i], bx + bw/2, by + bh/2 - 14);
+      textSize(10); text(labels[i], bx + bw/2, by + bh/2 + 10);
+    }
+  }
+
+  void drawSubMenu(float x, float y, float w) {
+    int ci = catIndex();
+    String[][] subs = getSubLabels();
+    color col  = catColor(ci);
+    String[] labels = subs[ci];
+
+    boolean hBack = theme.isHover(hoverX, hoverY, x, y, 80, 26);
+    fill(hBack ? theme.PANEL_2 : theme.PANEL);
+    stroke(theme.BORDER); strokeWeight(1); rect(x, y, 80, 26, 4); noStroke();
+    fill(theme.TEXT_DIM); textSize(9); textAlign(CENTER, CENTER); text("← BACK", x + 40, y + 13);
+    fill(col); textSize(11); textAlign(LEFT, CENTER); text(getCatLabels()[ci], x + 90, y + 13);
+    y += 32;
+
+    for (int i = 0; i < labels.length; i++) {
+      boolean hov = theme.isHover(hoverX, hoverY, x, y, w, 50);
+      fill(hov ? col : theme.PANEL_2); stroke(hov ? col : theme.BORDER); strokeWeight(hov ? 2 : 1);
+      rect(x, y, w, 50, 5); noStroke();
+      fill(hov ? color(10, 12, 22) : theme.TEXT); textSize(12); textAlign(LEFT, CENTER);
+      text(labels[i], x + 14, y + 25); y += 56;
+    }
+  }
+
+  int catIndex() {
+    ActivityCategory[] cats = ActivityCategory.values();
+    for (int i = 0; i < cats.length; i++) if (cats[i] == selectedCategory) return i;
+    return 0;
+  }
+
+  color catColor(int i) {
+    color[] cols = {theme.ACCENT, theme.ACCENT2, theme.FAMILY, theme.SUCCESS, theme.TEXT_GOLD, theme.PURPLE};
+    return cols[constrain(i, 0, cols.length - 1)];
+  }
+
+  // ════════════════════════════════════════════════════════
+  // INPUT — choice detection uses saved eventPanelY
+  // ════════════════════════════════════════════════════════
+  void onClick(int mx, int my) {
+    // Age Up button
+    float btnY = PY + PH - 62;
+    if (theme.isHover(mx, my, RP_X + 10, btnY, RP_W - 20, 50)) {
+      engine.ageUp(); return;
+    }
+
+    // Event choices — computed from eventPanelY so render and click always agree
+    if (engine.state.pendingEvent != null && engine.state.pendingEvent.choices != null) {
+      ArrayList<EventChoice> choices = engine.state.pendingEvent.choices;
+      float cy = eventPanelY + 138;
+      for (int i = 0; i < min(choices.size(), 3); i++) {
+        if (theme.isHover(mx, my, MP_X + 12, cy, MP_W - 24, 66)) {
+          engine.applyChoice(choices.get(i)); return;
+        }
+        cy += 74;
+      }
+      return; // swallow all other clicks while event is pending
+    }
+
+    // Activity grid / submenu
+    float ax = RP_X + 10, aw = RP_W - 20, ay = PY + 28;
+    if (selectedCategory == null) {
+      float bw = (aw - 8) / 2f, bh = 80;
+      ActivityCategory[] cats = ActivityCategory.values();
+      for (int i = 0; i < 6; i++) {
+        float bx = ax + (i % 2) * (bw + 8);
+        float by = ay + (i / 2) * (bh + 6);
+        if (theme.isHover(mx, my, bx, by, bw, bh)) { selectedCategory = cats[i]; return; }
+      }
+    } else {
+      if (theme.isHover(mx, my, ax, ay, 80, 26)) { selectedCategory = null; return; }
+      ay += 32;
+      String[][] subs = getSubLabels();
+      int ci = catIndex();
+      for (int i = 0; i < subs[ci].length; i++) {
+        if (theme.isHover(mx, my, ax, ay, aw, 50)) {
+          // OOP: Composition — uses Activity subclasses via polymorphism
+          dispatchActivity(ci, i); selectedCategory = null; return;
+        }
+        ay += 56;
+      }
+    }
+  }
+
+  void dispatchActivity(int catIdx, int optIdx) {
+    String[][] keys = getActionKeys();
+    String k = keys[catIdx][optIdx];
+    LifePhase phase = engine.state.lifePhase;
+    if (phase == LifePhase.PRO) {
+      switch (catIdx) {
+        case 0: engine.handleCareerAction(k);       break;
+        case 1: engine.handleTrainingAction(k);     break;
+        case 2: engine.handleRelationshipAction(k); break;
+        case 3: engine.handleHealthAction(k);       break;
+        case 4: engine.handleAssetAction(k);        break;
+        case 5: engine.handleSocialAction(k);       break;
+      }
+    } else {
+      engine.handleEarlyLifeActivity(k);
+    }
+  }
+
+  void onKey(char k, int kc) {
+    // Number keys 1/2/3 select event choices
+    if (engine.state.pendingEvent != null && engine.state.pendingEvent.choices != null) {
+      ArrayList<EventChoice> choices = engine.state.pendingEvent.choices;
+      int idx = -1;
+      if (k == '1') idx = 0;
+      else if (k == '2') idx = 1;
+      else if (k == '3') idx = 2;
+      if (idx >= 0 && idx < choices.size()) {
+        engine.applyChoice(choices.get(idx));
+      }
+    }
+  }
+
+  void onHover(int mx, int my) { super.onHover(mx, my); }
+}
+
+
+// ============================================================
+// MainMenu.pde
+// ============================================================
+
+/**
+ * MainMenuScreen — Game entry screen with animated background and player creation form.
+ * OOP role: Inheritance (extends BaseScreen), Polymorphism (getScreenTitle)
+ * Collaborators: BaseScreen, UITheme, GameEngine, SportConfig
+ */
+// OOP: Inheritance
 class MainMenuScreen extends BaseScreen {
   String    playerName    = "Alex Reyes";
   String    nationality   = "Spain";
@@ -4045,6 +9583,15 @@ class MainMenuScreen extends BaseScreen {
   String    dominantSide  = "Right";
   Sport     selectedSport = Sport.TENNIS;
   int       focusedField  = -1;
+
+  // Layout constants
+  final int CARD_PAD = 16;
+  final float FORM_CARD_W = 500;
+
+  // Particle system for animated menu background
+  float[] _px, _py, _pvx, _pvy;
+  color[] _pcol;
+  boolean _particlesInit = false;
 
   final String[] natOptions = {
     "Algeria","Argentina","Australia","Austria","Belgium","Bolivia",
@@ -4078,14 +9625,41 @@ class MainMenuScreen extends BaseScreen {
 
   MainMenuScreen(GameEngine e) { super(e); }
 
+  // OOP: Polymorphism — override getScreenTitle from BaseScreen
+  String getScreenTitle() { return "SPORTLIFE"; } // OOP: Polymorphism
+
   void onEnter() { titleY = -80; formAlpha = 0; }
 
   SportConfig cfg() { return getSportConfig(selectedSport); }
+
+  void initParticles() {
+    _px = new float[40]; _py = new float[40];
+    _pvx = new float[40]; _pvy = new float[40];
+    _pcol = new color[40];
+    color[] cols = {color(245,197,24,60), color(74,158,255,50), color(46,204,138,40), color(155,127,255,45)};
+    for (int i=0; i<40; i++) {
+      _px[i]=random(width); _py[i]=random(height);
+      _pvx[i]=random(-0.4,0.4); _pvy[i]=random(-0.4,0.4);
+      _pcol[i]=cols[(int)random(cols.length)];
+    }
+    _particlesInit = true;
+  }
+
+  void drawParticles() {
+    if (!_particlesInit) initParticles();
+    for (int i=0; i<40; i++) {
+      _px[i]+=_pvx[i]; _py[i]+=_pvy[i];
+      if (_px[i]<0||_px[i]>width)  _pvx[i]*=-1;
+      if (_py[i]<0||_py[i]>height) _pvy[i]*=-1;
+      fill(_pcol[i]); noStroke(); ellipse(_px[i],_py[i],3,3);
+    }
+  }
 
   void render() {
     // Deep space gradient background
     background(8, 10, 20);
     theme.drawDotGrid();
+    drawParticles();
 
     formAlpha = lerp(formAlpha, 255, 0.04);
 
@@ -4366,24 +9940,24 @@ class MainMenuScreen extends BaseScreen {
       }
     }
 
-    // Player name field: input rect at cy+128 (fy=cy+112, input at fy+16)
-    if (theme.isHover(mx, my, cx + 20, cy + 128, fw, 36)) { focusedField = 0; return; }
+    // Player name field: input rect at cy+130 (fy=cy+114, input at fy+16)
+    if (theme.isHover(mx, my, cx + 20, cy + 130, fw, 36)) { focusedField = 0; return; }
 
-    // Nationality field: input rect at cy+192 (fy=cy+176, input at fy+16)
-    if (theme.isHover(mx, my, cx + 20, cy + 192, fw, 36)) {
+    // Nationality field: input rect at cy+194 (fy=cy+178, input at fy+16)
+    if (theme.isHover(mx, my, cx + 20, cy + 194, fw, 36)) {
       dropdownOpen = !dropdownOpen;
       focusedField = -1;
       if (dropdownOpen) scrollToSelected();
       return;
     }
 
-    // Hometown field: input rect at cy+256 (fy=cy+240, input at fy+16)
-    if (theme.isHover(mx, my, cx + 20, cy + 256, fw, 36)) { focusedField = 1; return; }
+    // Hometown field: input rect at cy+258 (fy=cy+242, input at fy+16)
+    if (theme.isHover(mx, my, cx + 20, cy + 258, fw, 36)) { focusedField = 1; return; }
 
     int[] birthYears = {1990, 1993, 1995, 1998, 2000, 2002, 2005};
     float byw = (fw - (birthYears.length - 1) * 3) / birthYears.length;
-    // Birth year buttons: fy=cy+320 (fy=cy+304, buttons at fy+16)
-    float yy  = cy + 320;
+    // Birth year buttons: fy=cy+322 (fy=cy+306, buttons at fy+16)
+    float yy  = cy + 322;
     for (int i = 0; i < birthYears.length; i++) {
       if (theme.isHover(mx, my, cx + 20 + i * (byw + 3), yy, byw, 32)) {
         birthYear = birthYears[i]; return;
@@ -4392,22 +9966,22 @@ class MainMenuScreen extends BaseScreen {
 
     PlayStyle[] styles = PlayStyle.values();
     float sw  = (fw - (styles.length - 1) * 3) / styles.length;
-    // Style buttons: fy=cy+368 (fy=cy+352, buttons at fy+16)
-    float styY = cy + 368;
+    // Style buttons: fy=cy+386 (fy=cy+370, buttons at fy+16)
+    float styY = cy + 386;
     for (int i = 0; i < styles.length; i++) {
       if (theme.isHover(mx, my, cx + 20 + i * (sw + 3), styY, sw, 36)) {
         playStyle = styles[i]; return;
       }
     }
 
-    // Dominant side buttons: fy=cy+418 (fy=cy+402, buttons at fy+16)
-    float hy = cy + 418;
+    // Dominant side buttons: fy=cy+452 (fy=cy+436, buttons at fy+16)
+    float hy = cy + 452;
     if (theme.isHover(mx, my, cx + 20,  hy, 90, 32)) { dominantSide = "Right"; return; }
     if (theme.isHover(mx, my, cx + 120, hy, 90, 32)) { dominantSide = "Left";  return; }
 
-    // Start button: fy=cy+468, h=54
-    float by = cy + 468;
-    if (theme.isHover(mx, my, cx + 20, by, fw, 54)) {
+    // Start button: fy=cy+502, h=48
+    float by = cy + 502;
+    if (theme.isHover(mx, my, cx + 20, by, fw, 48)) {
       if (!playerName.isEmpty()) {
         engine.newGame(playerName, nationality, hometown, playStyle, dominantSide, selectedSport, birthYear);
       }
@@ -4418,10 +9992,10 @@ class MainMenuScreen extends BaseScreen {
 
   void onHover(int mx, int my) {
     super.onHover(mx, my);
-    // cy=162, fw=480; player name input at cy+128, hometown input at cy+256
+    // cy=162, fw=480; player name input at cy+130, hometown input at cy+258
     float cx = width / 2 - 260, cy = 162, fw = 480;
-    hoverName     = theme.isHover(mx, my, cx + 20, cy + 128, fw, 36);
-    hoverHometown = theme.isHover(mx, my, cx + 20, cy + 256, fw, 36);
+    hoverName     = theme.isHover(mx, my, cx + 20, cy + 130, fw, 36);
+    hoverHometown = theme.isHover(mx, my, cx + 20, cy + 258, fw, 36);
   }
 
   void onKey(char k, int kc) {
@@ -4464,2344 +10038,80 @@ class MainMenuScreen extends BaseScreen {
     dropdownScroll = 0;
   }
 }
-// ============================================================
-// MATCH ENGINE & TOURNAMENT
-// ============================================================
-
-class MatchResult {
-  String winnerName, loserName;
-  String score;
-  int   rankingPointsAwarded;
-  float prizeMoneyAwarded;
-  boolean playerWon;
-  String tournamentName;
-  RoundName round;
-
-  MatchResult(String w, String l, String sc, int pts, float prize,
-              boolean pw, String tn, RoundName r) {
-    winnerName           = w;
-    loserName            = l;
-    score                = sc;
-    rankingPointsAwarded = pts;
-    prizeMoneyAwarded    = prize;
-    playerWon            = pw;
-    tournamentName       = tn;
-    round                = r;
-  }
-}
-
-class MatchEngine {
-  MatchResult simulate(Player player, OpponentProfile opp,
-                       Surface surface, TournamentTier tier,
-                       RoundName round, int currentYear, Sport sport) {
-    PlayerAttributes eff = player.effectiveAttributes();
-
-    float surfBonus = (sport == Sport.TENNIS) ? getSurfaceBonus(player.playStyle, surface) : 0;
-    float playerRating = (eff.serve    * 0.20 + eff.forehand * 0.18 +
-                          eff.backhand * 0.15 + eff.speed    * 0.15 +
-                          eff.stamina  * 0.12 + eff.mental   * 0.20) + surfBonus;
-
-    float clutch = player.personality.clutchFactor;
-    playerRating += map(clutch, 0, 100, -5, 5);
-    playerRating += player.career.worldRanking < opp.ranking ? 2 : -1;
-
-    float diff    = playerRating - opp.rating;
-    float winProb = 1.0 / (1.0 + exp(-diff / 15.0));
-    winProb       = constrain(winProb + random(-0.08, 0.08), 0.05, 0.95);
-
-    boolean playerWon = random(1) < winProb;
-    String score = generateScore(playerWon, sport);
-
-    int   pts   = getPoints(tier, round, playerWon);
-    float prize = getPrize(tier, round, playerWon);
-
-    String winner = playerWon ? player.name : opp.name;
-    String loser  = playerWon ? opp.name    : player.name;
-
-    return new MatchResult(winner, loser, score, pts, prize, playerWon, "", round);
-  }
-
-  float getSurfaceBonus(PlayStyle style, Surface surf) {
-    if (style == PlayStyle.SERVE_VOLLEY         && surf == Surface.GRASS) return 6;
-    if (style == PlayStyle.AGGRESSIVE_BASELINER && surf == Surface.HARD)  return 4;
-    if (style == PlayStyle.COUNTER_PUNCHER      && surf == Surface.CLAY)  return 5;
-    if (style == PlayStyle.ALL_COURT) return 2;
-    return 0;
-  }
-
-  String generateScore(boolean won, Sport sport) {
-    switch (sport) {
-      case BASKETBALL: {
-        int myPts  = won ? (int)random(95, 128) : (int)random(82, 108);
-        int oppPts = won ? myPts - (int)random(3, 22) : myPts + (int)random(3, 22);
-        return myPts + "-" + oppPts;
-      }
-      case SOCCER: {
-        int myG  = won ? (int)random(1, 5) : (int)random(0, 2);
-        int oppG = won ? max(0, myG - (int)random(1, 3)) : myG + (int)random(1, 3);
-        return myG + "-" + oppG;
-      }
-      case GOLF: {
-        int score = won ? -(int)random(5, 18) : (int)random(0, 8);
-        return (score <= 0 ? "" : "+") + score;
-      }
-      case BOXING: {
-        if (won) {
-          float r = random(1);
-          if (r < 0.25) return "KO R" + (int)random(1, 8);
-          if (r < 0.45) return "TKO R" + (int)random(3, 10);
-          if (r < 0.75) return "UD 12";
-          return "MD 12";
-        } else {
-          float r = random(1);
-          if (r < 0.20) return "KO'd R" + (int)random(2, 9);
-          if (r < 0.35) return "TKO'd R" + (int)random(4, 11);
-          return "UD Loss 12";
-        }
-      }
-      default: { // TENNIS
-        ArrayList<String> sets = new ArrayList<String>();
-        if (won) {
-          sets.add(random(1) > 0.4 ? "6-" + (int)random(0, 5) : "7-6");
-          sets.add(random(1) > 0.4 ? "6-" + (int)random(0, 5) : "7-6");
-          if (random(1) > 0.6) sets.add(0, (int)random(3, 6) + "-6");
-        } else {
-          sets.add(random(1) > 0.4 ? (int)random(0, 5) + "-6" : "6-7");
-          sets.add(random(1) > 0.4 ? (int)random(0, 5) + "-6" : "6-7");
-          if (random(1) > 0.6) sets.add(0, "6-" + (int)random(3, 6));
-        }
-        String out = "";
-        for (int i = 0; i < sets.size(); i++) {
-          out += sets.get(i);
-          if (i < sets.size() - 1) out += " ";
-        }
-        return out;
-      }
-    }
-  }
-
-  int getPoints(TournamentTier tier, RoundName round, boolean won) {
-    int base = 0;
-    switch (tier) {
-      case GRAND_SLAM:   base = won ? 2000 : 0; break;
-      case MASTERS_1000: base = won ? 1000 : 0; break;
-      case ATP_500:      base = won ? 500  : 0; break;
-      case ATP_250:      base = won ? 250  : 0; break;
-      case CHALLENGER:   base = won ? 125  : 0; break;
-    }
-    switch (round) {
-      case F:   return (int)(base * 1.0);
-      case SF:  return (int)(base * 0.6);
-      case QF:  return (int)(base * 0.36);
-      case R16: return (int)(base * 0.18);
-      case R32: return (int)(base * 0.09);
-      case R64: return (int)(base * 0.045);
-      default:  return (int)(base * 0.02);
-    }
-  }
-
-  float getPrize(TournamentTier tier, RoundName round, boolean won) {
-    float base = 0;
-    switch (tier) {
-      case GRAND_SLAM:   base = won ? 2_000_000 : 0; break;
-      case MASTERS_1000: base = won ? 1_000_000 : 0; break;
-      case ATP_500:      base = won ?   500_000 : 0; break;
-      case ATP_250:      base = won ?   250_000 : 0; break;
-      case CHALLENGER:   base = won ?    50_000 : 0; break;
-    }
-    switch (round) {
-      case F:   return base * 1.0;
-      case SF:  return base * 0.5;
-      case QF:  return base * 0.25;
-      case R16: return base * 0.12;
-      default:  return base * 0.05;
-    }
-  }
-}
-
-// Opponent Profile
-class OpponentProfile {
-  String name;
-  String nationality;
-  int    ranking;
-  float  rating;
-  PlayStyle style;
-
-  OpponentProfile(String n, String nat, int rank) {
-    name        = n;
-    nationality = nat;
-    ranking     = rank;
-    rating      = map(rank, 1, 500, 88, 42) + random(-5, 5);
-    PlayStyle[] styles = PlayStyle.values();
-    style = styles[(int)random(styles.length)];
-  }
-}
-
-// Tournament
-class Tournament {
-  String name;
-  TournamentTier tier;
-  Surface        surface;
-  int            drawSize;
-  float          prizeMoney;
-  int            week;
-  String         venueLabel = "";
-  Sport          sport      = Sport.TENNIS;
-
-  Tournament(String n, TournamentTier t, Surface s, int draw, float prize, int wk) {
-    name = n; tier = t; surface = s; drawSize = draw; prizeMoney = prize; week = wk;
-  }
-
-  TournamentRun simulate(Player player, MatchEngine eng, int currentYear) {
-    RoundName[] rounds = getRounds();
-    TournamentRun run = new TournamentRun(this);
-    SportConfig cfg = getSportConfig(sport);
-
-    for (RoundName round : rounds) {
-      int oppRank = generateOpponentRank(round);
-      OpponentProfile opp = generateOpponent(oppRank, cfg);
-      MatchResult result = eng.simulate(player, opp, surface, tier, round, currentYear, sport);
-      result.tournamentName = name;
-      run.addResult(result);
-      if (!result.playerWon) break;
-    }
-    run.finalRound = run.results.get(run.results.size() - 1).round;
-    run.won        = run.results.get(run.results.size() - 1).playerWon &&
-                     run.finalRound == RoundName.F;
-    return run;
-  }
-
-  RoundName[] getRounds() {
-    if (drawSize >= 128) return new RoundName[]{ RoundName.R128, RoundName.R64, RoundName.R32, RoundName.R16, RoundName.QF, RoundName.SF, RoundName.F };
-    if (drawSize >=  64) return new RoundName[]{               RoundName.R64, RoundName.R32, RoundName.R16, RoundName.QF, RoundName.SF, RoundName.F };
-    if (drawSize >=  32) return new RoundName[]{                              RoundName.R32, RoundName.R16, RoundName.QF, RoundName.SF, RoundName.F };
-    return                       new RoundName[]{                                             RoundName.R16, RoundName.QF, RoundName.SF, RoundName.F };
-  }
-
-  int generateOpponentRank(RoundName round) {
-    switch (round) {
-      case F:   return (int)random(1, 5);
-      case SF:  return (int)random(3, 15);
-      case QF:  return (int)random(8, 30);
-      case R16: return (int)random(20, 60);
-      case R32: return (int)random(40, 100);
-      default:  return (int)random(80, 200);
-    }
-  }
-
-  OpponentProfile generateOpponent(int rank, SportConfig cfg) {
-    int idx = (int)random(cfg.oppFirst.length);
-    return new OpponentProfile(cfg.oppFirst[idx] + " " + cfg.oppLast[idx], cfg.oppNations[idx], rank);
-  }
-}
-
-class TournamentRun {
-  Tournament tournament;
-  ArrayList<MatchResult> results = new ArrayList<MatchResult>();
-  RoundName finalRound;
-  boolean won = false;
-
-  TournamentRun(Tournament t) { tournament = t; }
-
-  void addResult(MatchResult r) { results.add(r); }
-
-  int totalPoints() {
-    int sum = 0;
-    for (MatchResult r : results) sum += r.rankingPointsAwarded;
-    return sum;
-  }
-
-  float totalPrize() {
-    float sum = 0;
-    for (MatchResult r : results) sum += r.prizeMoneyAwarded;
-    return sum;
-  }
-}
-
-// Tournament Calendar
-class TournamentCalendar {
-  ArrayList<Tournament> schedule = new ArrayList<Tournament>();
-  Sport sport;
-
-  TournamentCalendar(Sport sport) { this.sport = sport; buildSchedule(sport); }
-
-  void buildSchedule(Sport s) {
-    schedule.clear();
-    switch (s) {
-      case BASKETBALL: buildBasketball(); break;
-      case SOCCER:     buildSoccer();     break;
-      case GOLF:       buildGolf();       break;
-      case BOXING:     buildBoxing();     break;
-      default:         buildTennis();     break;
-    }
-  }
-
-  void buildTennis() {
-    add("Australian Open",      TournamentTier.GRAND_SLAM,   Surface.HARD,         128, 2_000_000,  2, "Hard");
-    add("Dubai Championships",  TournamentTier.ATP_500,      Surface.HARD,          32,   500_000,  5, "Hard");
-    add("Indian Wells Masters", TournamentTier.MASTERS_1000, Surface.HARD,          96, 1_000_000,  9, "Hard");
-    add("Miami Open",           TournamentTier.MASTERS_1000, Surface.HARD,          96, 1_000_000, 12, "Hard");
-    add("Monte-Carlo Masters",  TournamentTier.MASTERS_1000, Surface.CLAY,          64, 1_000_000, 15, "Clay");
-    add("Barcelona Open",       TournamentTier.ATP_500,      Surface.CLAY,          48,   500_000, 17, "Clay");
-    add("Madrid Open",          TournamentTier.MASTERS_1000, Surface.CLAY,          96, 1_000_000, 19, "Clay");
-    add("Italian Open",         TournamentTier.MASTERS_1000, Surface.CLAY,          96, 1_000_000, 21, "Clay");
-    add("Roland Garros",        TournamentTier.GRAND_SLAM,   Surface.CLAY,         128, 2_000_000, 23, "Clay");
-    add("Queen's Club",         TournamentTier.ATP_500,      Surface.GRASS,         48,   500_000, 25, "Grass");
-    add("Wimbledon",            TournamentTier.GRAND_SLAM,   Surface.GRASS,        128, 2_000_000, 27, "Grass");
-    add("US Open Series",       TournamentTier.MASTERS_1000, Surface.HARD,          64, 1_000_000, 33, "Hard");
-    add("US Open",              TournamentTier.GRAND_SLAM,   Surface.HARD,         128, 2_000_000, 35, "Hard");
-    add("Shanghai Masters",     TournamentTier.MASTERS_1000, Surface.HARD,          96, 1_000_000, 41, "Hard");
-    add("Paris Masters",        TournamentTier.MASTERS_1000, Surface.INDOOR_HARD,   64, 1_000_000, 46, "Indoor");
-    add("ATP Finals",           TournamentTier.MASTERS_1000, Surface.INDOOR_HARD,    8, 1_500_000, 49, "Indoor");
-  }
-
-  void buildBasketball() {
-    add("NBA Finals",             TournamentTier.GRAND_SLAM,   Surface.HARD,  8, 2_000_000, 22, "Finals");
-    add("Conference Finals",      TournamentTier.MASTERS_1000, Surface.HARD,  8, 1_000_000, 19, "Conf. Finals");
-    add("Conference Semis",       TournamentTier.ATP_500,      Surface.HARD, 16,   600_000, 16, "Conf. Semis");
-    add("First Round Playoffs",   TournamentTier.ATP_250,      Surface.HARD, 16,   300_000, 14, "Playoffs R1");
-    add("All-Star Weekend",       TournamentTier.ATP_500,      Surface.HARD, 32,   400_000,  5, "All-Star");
-    add("Opening Week",           TournamentTier.CHALLENGER,   Surface.HARD, 32,    50_000,  1, "Regular Season");
-    add("Winter Classic",         TournamentTier.ATP_250,      Surface.HARD, 32,   200_000,  8, "Regular Season");
-    add("February Stretch",       TournamentTier.CHALLENGER,   Surface.HARD, 32,    50_000, 11, "Regular Season");
-    add("March Run",              TournamentTier.ATP_250,      Surface.HARD, 32,   150_000, 28, "Regular Season");
-    add("Play-In Tournament",     TournamentTier.ATP_500,      Surface.HARD, 16,   300_000, 35, "Play-In");
-    add("Summer League",          TournamentTier.CHALLENGER,   Surface.HARD, 32,    30_000, 40, "Summer League");
-    add("Pre-Season",             TournamentTier.CHALLENGER,   Surface.HARD, 32,    10_000, 45, "Pre-Season");
-  }
-
-  void buildSoccer() {
-    add("UEFA Champions League",  TournamentTier.GRAND_SLAM,   Surface.GRASS, 32, 2_500_000, 21, "European");
-    add("FIFA World Cup",         TournamentTier.GRAND_SLAM,   Surface.GRASS, 32, 3_000_000, 27, "International");
-    add("Premier League Title",   TournamentTier.MASTERS_1000, Surface.GRASS, 20, 1_200_000, 38, "League");
-    add("FA Cup Final",           TournamentTier.ATP_500,      Surface.GRASS, 32,   500_000, 18, "Cup");
-    add("Europa League",          TournamentTier.ATP_500,      Surface.GRASS, 32,   600_000, 23, "European");
-    add("Carabao Cup",            TournamentTier.ATP_250,      Surface.GRASS, 16,   200_000,  6, "Cup");
-    add("Community Shield",       TournamentTier.ATP_250,      Surface.GRASS,  2,   100_000,  2, "Shield");
-    add("Winter Break Return",    TournamentTier.CHALLENGER,   Surface.GRASS,  8,    50_000,  1, "League");
-    add("Boxing Day Fixtures",    TournamentTier.CHALLENGER,   Surface.GRASS,  8,    50_000, 12, "League");
-    add("Spring Fixtures",        TournamentTier.CHALLENGER,   Surface.GRASS,  8,    80_000, 30, "League");
-    add("Euro Championships",     TournamentTier.MASTERS_1000, Surface.GRASS, 24, 1_000_000, 44, "International");
-    add("Nations League Final",   TournamentTier.ATP_500,      Surface.GRASS,  4,   400_000, 48, "International");
-  }
-
-  void buildGolf() {
-    add("The Masters",            TournamentTier.GRAND_SLAM,   Surface.GRASS, 96, 3_000_000, 14, "Augusta");
-    add("US Open",                TournamentTier.GRAND_SLAM,   Surface.HARD,  96, 2_500_000, 23, "Parkland");
-    add("The Open Championship",  TournamentTier.GRAND_SLAM,   Surface.GRASS, 96, 2_500_000, 29, "Links");
-    add("PGA Championship",       TournamentTier.GRAND_SLAM,   Surface.HARD,  96, 2_500_000, 19, "Parkland");
-    add("The Players Championship",TournamentTier.MASTERS_1000,Surface.GRASS, 96, 2_000_000, 11, "Stadium");
-    add("Genesis Invitational",   TournamentTier.ATP_500,      Surface.GRASS, 64, 1_000_000,  7, "Links");
-    add("WGC Match Play",         TournamentTier.ATP_500,      Surface.GRASS, 64, 1_000_000, 11, "Desert");
-    add("Arnold Palmer Invit.",   TournamentTier.ATP_500,      Surface.GRASS, 64, 1_000_000,  9, "Parkland");
-    add("Memorial Tournament",    TournamentTier.ATP_500,      Surface.GRASS, 64, 1_000_000, 22, "Parkland");
-    add("Tour Championship",      TournamentTier.MASTERS_1000, Surface.GRASS, 30, 1_500_000, 36, "Parkland");
-    add("Sentry TOC",             TournamentTier.ATP_250,      Surface.GRASS, 48,   400_000,  1, "Mountain");
-    add("Farmers Insurance Open", TournamentTier.ATP_250,      Surface.GRASS, 64,   400_000,  4, "Links");
-    add("Honda Classic",          TournamentTier.ATP_250,      Surface.GRASS, 64,   300_000, 37, "Parkland");
-    add("Shriners Open",          TournamentTier.CHALLENGER,   Surface.GRASS, 64,   200_000, 41, "Desert");
-    add("RSM Classic",            TournamentTier.CHALLENGER,   Surface.GRASS, 64,   200_000, 45, "Links");
-    add("Hero World Challenge",   TournamentTier.ATP_250,      Surface.GRASS, 20,   350_000, 49, "Island");
-  }
-
-  void buildBoxing() {
-    add("World Title Fight",      TournamentTier.GRAND_SLAM,   Surface.HARD,   2, 5_000_000,  6, "Arena");
-    add("Interim Title Fight",    TournamentTier.MASTERS_1000, Surface.HARD,   2, 2_000_000, 14, "Arena");
-    add("Mandatory Defense",      TournamentTier.ATP_500,      Surface.HARD,   2, 1_000_000, 22, "Stadium");
-    add("Ranked Contender Bout",  TournamentTier.ATP_250,      Surface.HARD,   2,   400_000, 30, "Casino");
-    add("Tune-Up Fight",          TournamentTier.CHALLENGER,   Surface.HARD,   2,   100_000,  3, "Arena");
-    add("Spring Main Event",      TournamentTier.ATP_500,      Surface.HARD,   2,   800_000, 10, "Stadium");
-    add("Summer Showdown",        TournamentTier.MASTERS_1000, Surface.HARD,   2, 1_500_000, 18, "Stadium");
-    add("Fall Classic",           TournamentTier.ATP_250,      Surface.HARD,   2,   500_000, 37, "Casino");
-    add("Year-End Spectacular",   TournamentTier.MASTERS_1000, Surface.HARD,   2, 2_000_000, 47, "Arena");
-    add("International Bout",     TournamentTier.ATP_500,      Surface.HARD,   2,   700_000, 41, "International");
-  }
-
-  void add(String name, TournamentTier tier, Surface surf, int draw, float prize, int week, String venueLabel) {
-    Tournament t = new Tournament(name, tier, surf, draw, prize, week);
-    t.venueLabel = venueLabel;
-    t.sport = sport;
-    schedule.add(t);
-  }
-
-  Tournament getTournamentForWeek(int week) {
-    for (Tournament t : schedule) {
-      if (t.week == week) return t;
-    }
-    return null;
-  }
-
-  ArrayList<Tournament> getGrandSlams() {
-    ArrayList<Tournament> gs = new ArrayList<Tournament>();
-    for (Tournament t : schedule) if (t.tier == TournamentTier.GRAND_SLAM) gs.add(t);
-    return gs;
-  }
-}
-
-// Training
-class TrainingSession {
-  String type;
-  float  intensity;
-  TrainingSession(String t, float i) { type = t; intensity = i; }
-
-  TrainingOutcome projectedGains() {
-    TrainingOutcome o = new TrainingOutcome();
-    float base = intensity * 0.02;
-    switch (type) {
-      case "SERVE":    o.serveGain    = (int)(base * 2); break;
-      case "FITNESS":  o.staminaGain  = (int)(base * 2); o.speedGain = (int)base; break;
-      case "MENTAL":   o.mentalGain   = (int)(base * 2); break;
-      case "TACTICAL": o.forehandGain = (int) base;       o.backhandGain = (int) base; break;
-    }
-    o.fatigueAdded = intensity * 0.3;
-    return o;
-  }
-}
-
-class TrainingOutcome {
-  int   serveGain    = 0, forehandGain = 0, backhandGain = 0;
-  int   speedGain    = 0, staminaGain  = 0, mentalGain   = 0;
-  float fatigueAdded = 0;
-  boolean injuryOccurred = false;
-}
-// ============================================================
-// MATCH SCREEN (tournament run summary)
-// ============================================================
-class MatchScreen extends BaseScreen {
-  MatchScreen(GameEngine e) { super(e); }
-
-  void render() {
-    TournamentRun run = engine.state.lastTournamentRun;
-    if (run == null) {
-      fill(theme.TEXT_DIM); textSize(14); textAlign(CENTER, CENTER);
-      text("No recent tournament", width / 2, height / 2);
-      return;
-    }
-
-    float x = 40, y = 70;
-    fill(run.won ? theme.ACCENT : theme.TEXT_DIM);
-    textSize(24); textAlign(LEFT, TOP);
-    text((run.won ? "WON - " : "EXITED - ") + run.tournament.name, x, y);
-    y += 50;
-
-    fill(theme.TEXT_DIM); textSize(11);
-    text(run.tournament.surface + " - " + run.tournament.tier, x, y);
-    y += 40;
-
-    sectionHeader("MATCH RESULTS", x, y); y += 20;
-    for (MatchResult r : run.results) {
-      fill(r.playerWon ? color(20, 45, 25) : color(45, 20, 20));
-      rect(x, y, 600, 40, 4);
-      fill(r.playerWon ? theme.SUCCESS : theme.DANGER);
-      textSize(12); textAlign(LEFT, CENTER);
-      text(r.playerWon ? "WIN" : "LOSS", x + 12, y + 20);
-
-      fill(theme.TEXT); textAlign(LEFT, CENTER);
-      text(r.round + " vs " + (r.playerWon ? r.loserName : r.winnerName), x + 65, y + 20);
-
-      fill(theme.TEXT_DIM); textAlign(RIGHT, CENTER);
-      text(r.score + " +" + r.rankingPointsAwarded + " pts", x + 588, y + 20);
-      y += 46;
-    }
-
-    y += 20;
-    fill(theme.TEXT_DIM); textSize(12); textAlign(LEFT, TOP);
-    text("Total points earned: " + run.totalPoints() +
-         " | Prize: " + formatMoney(run.totalPrize()), x, y);
-  }
-}
-// ============================================================
-// PLAYER DOMAIN — core player and sub-classes
-// ============================================================
-class Player {
-  String name;
-  String nationality;
-  int    birthYear;
-  PlayStyle playStyle;
-  String dominantHand;
-
-  PlayerAttributes  baseAttributes;
-  PlayerForm        form;
-  PlayerHealth      health;
-  PlayerCareer      career;
-  PlayerPersonality personality;
-  PlayerProgression progression;
-  Family            family;
-  PlayerFinances    finances;
-  Coach[]           coaches;
-  Reputation        reputation;
-  AcademicRecord    academic;
-
-  // Life-sim systems
-  MentalHealthSystem mentalHealth;
-  SocialMediaProfile socialMedia;
-  AgentContract      agent;
-  AddictionLevel     addiction           = AddictionLevel.NONE;
-  int                addictionWeeks      = 0;
-  LegalStatus        legalStatus         = LegalStatus.CLEAN;
-  String             activeLegalCase     = "";
-  int                legalWeeksRemaining = 0;
-  float              legalFineAmount     = 0;
-  ArrayList<Award>   awards;
-  ArrayList<String>  lifeEvents;
-  float              popularity          = 10;
-  int                weeksInRelationship = 0;
-  boolean            hasSocialManager    = false;
-  String             hometown            = "";
-  Parents            parents;
-  NutritionSystem    nutrition;
-  CoachingStaff      coachingStaff;
-
-  // BitLife-style core life stats (0-100)
-  float wellbeing  = 90;
-  float happiness  = 75;
-  float smarts     = 50;
-  float looks      = 50;
-
-  Player(String name, String nationality, int birthYear,
-         PlayStyle style, String hand) {
-    this.name         = name;
-    this.nationality  = nationality;
-    this.birthYear    = birthYear;
-    this.playStyle    = style;
-    this.dominantHand = hand;
-
-    baseAttributes = new PlayerAttributes(60, 58, 55, 45, 65, 70, 55);
-    form           = new PlayerForm();
-    health         = new PlayerHealth();
-    career         = new PlayerCareer();
-    personality    = new PlayerPersonality();
-    progression    = new PlayerProgression(this);
-    family         = new Family();
-    finances       = new PlayerFinances();
-    academic       = new AcademicRecord();
-    coaches        = new Coach[0];
-    reputation     = new Reputation();
-    mentalHealth   = new MentalHealthSystem();
-    socialMedia    = new SocialMediaProfile();
-    agent          = new AgentContract(AgentTier.NO_AGENT);
-    awards         = new ArrayList<Award>();
-    lifeEvents     = new ArrayList<String>();
-    parents        = new Parents();
-    nutrition      = new NutritionSystem();
-    coachingStaff  = new CoachingStaff();
-
-    wellbeing = constrain(75 + random(-10, 20), 0, 100);
-    happiness = constrain(65 + random(-10, 25), 0, 100);
-    smarts    = constrain(random(30, 90),        0, 100);
-    looks     = constrain(random(30, 90),        0, 100);
-  }
-
-  int age(int currentYear) { return currentYear - birthYear; }
-
-  PlayerAttributes effectiveAttributes() {
-    float formMult   = map(form.confidence, 0, 100, 0.85, 1.15);
-    float fatMult    = map(form.fatigue,    0, 100, 1.05, 0.80);
-    float mentalMult = mentalHealth.performanceModifier();
-    float addMult    = addictionPenalty();
-    float mult       = formMult * fatMult * mentalMult * addMult;
-    return new PlayerAttributes(
-      (int)(baseAttributes.serve    * mult),
-      (int)(baseAttributes.forehand * mult),
-      (int)(baseAttributes.backhand * mult),
-      (int)(baseAttributes.volley   * mult),
-      (int)(baseAttributes.speed    * mult),
-      (int)(baseAttributes.stamina  * mult),
-      (int)(baseAttributes.mental   * mult * map(form.confidence, 0, 100, 0.9, 1.1))
-    );
-  }
-
-  float addictionPenalty() {
-    switch (addiction) {
-      case MILD:     return 0.96;
-      case MODERATE: return 0.88;
-      case SEVERE:   return 0.75;
-      default:       return 1.0;
-    }
-  }
-
-  CareerPhase currentPhase(int currentYear) {
-    int a = age(currentYear);
-    if (a < 18) return CareerPhase.JUNIOR;
-    if (a < 22) return CareerPhase.RISING;
-    if (a < 28) return CareerPhase.PRIME;
-    if (a < 32) return CareerPhase.VETERAN;
-    return CareerPhase.DECLINING;
-  }
-
-  void addLifeEvent(String entry, int year) {
-    lifeEvents.add(0, "[" + year + "] " + entry);
-    if (lifeEvents.size() > 60) lifeEvents.remove(lifeEvents.size() - 1);
-  }
-
-  String toPromptString(int currentYear, int week) {
-    PlayerAttributes eff = effectiveAttributes();
-    return "Player: " + name +
-      " | Age: "              + age(currentYear) +
-      " | Nation: "           + nationality +
-      " | Style: "            + playStyle +
-      " | Ranking: #"         + career.worldRanking +
-      " | Phase: "            + currentPhase(currentYear) +
-      " | Serve: "            + eff.serve +
-      " | Forehand: "         + eff.forehand +
-      " | Backhand: "         + eff.backhand +
-      " | Speed: "            + eff.speed +
-      " | Stamina: "          + eff.stamina +
-      " | Mental: "           + eff.mental +
-      " | Fatigue: "          + (int)form.fatigue    + "/100" +
-      " | Confidence: "       + (int)form.confidence + "/100" +
-      " | MentalState: "      + mentalHealth.stateLabel() +
-      " | Injury: "           + health.status +
-      " | GrandSlams: "       + career.grandSlamTitles +
-      " | Titles: "           + career.titlesWon +
-      " | Week: "             + week +
-      " | Savings: $"         + (int)finances.savings +
-      " | NetWorth: $"        + (int)finances.netWorth() +
-      " | Lifestyle: "        + finances.lifestyleLabel() +
-      " | Agent: "            + agent.tierLabel() +
-      " | Followers: "        + socialMedia.followersLabel() +
-      " | Addiction: "        + addiction +
-      " | LegalStatus: "      + legalStatus +
-      " | RelStatus: "        + family.statusDisplay() +
-      " | Kids: "             + family.children.size() +
-      " | Hometown: "          + hometown +
-      " | Mom: "              + (parents != null ? parents.mom.name + "(" + (int)parents.mom.relationship + ")" : "N/A") +
-      " | Dad: "              + (parents != null ? parents.dad.name + "(" + (int)parents.dad.relationship + ")" : "N/A") +
-      " | FamilyHappiness: "  + (int)family.familyHappiness + "/100" +
-      " | Wellbeing: "        + (int)wellbeing + "/100" +
-      " | Happiness: "        + (int)happiness + "/100" +
-      " | Smarts: "           + (int)smarts    + "/100" +
-      " | Looks: "            + (int)looks     + "/100";
-  }
-}
-
-// Attributes
-class PlayerAttributes {
-  int serve, forehand, backhand, volley, speed, stamina, mental;
-  PlayerAttributes(int sv, int fh, int bh, int vo, int sp, int st, int mn) {
-    serve = sv; forehand = fh; backhand = bh; volley = vo;
-    speed = sp; stamina = st; mental = mn;
-  }
-}
-
-// Form
-class PlayerForm {
-  float confidence     = 60;
-  float fatigue        = 20;
-  float momentum       = 50;
-  float matchSharpness = 50;
-
-  void applyMatchResult(boolean won, boolean wasClose) {
-    if (won) {
-      confidence     = min(100, confidence + (wasClose ? 8 : 5));
-      momentum       = min(100, momentum + 6);
-      matchSharpness = min(100, matchSharpness + 4);
-    } else {
-      confidence = max(0, confidence - (wasClose ? 3 : 8));
-      momentum   = max(0, momentum - 5);
-    }
-    fatigue = min(100, fatigue + random(8, 18));
-  }
-
-  void applyRestWeek() {
-    fatigue        = max(0, fatigue - random(15, 25));
-    matchSharpness = max(0, matchSharpness - 5);
-    momentum       = max(0, momentum - 3);
-  }
-
-  void applyTrainingWeek(float intensity) {
-    fatigue    = min(100, fatigue + intensity * 0.4);
-    confidence = min(100, confidence + 2);
-  }
-}
-
-// Health
-class PlayerHealth {
-  InjuryStatus status         = InjuryStatus.HEALTHY;
-  String       injuredPart    = "";
-  int          weeksRemaining = 0;
-
-  float injuryRisk(PlayerForm form, float intensity) {
-    float base = 0.03;
-    base += map(form.fatigue, 0, 100, 0, 0.12);
-    base += intensity * 0.05;
-    return base;
-  }
-
-  void advanceWeek() {
-    if (weeksRemaining > 0) {
-      weeksRemaining--;
-      if (weeksRemaining == 0) {
-        status      = InjuryStatus.HEALTHY;
-        injuredPart = "";
-      }
-    }
-  }
-
-  boolean isAvailable() {
-    return status == InjuryStatus.HEALTHY || status == InjuryStatus.DAY_TO_DAY;
-  }
-
-  void applyInjury(String part, int weeks) {
-    injuredPart    = part;
-    weeksRemaining = weeks;
-    if (weeks <= 1)      status = InjuryStatus.DAY_TO_DAY;
-    else if (weeks <= 6) status = InjuryStatus.OUT_WEEKS;
-    else                 status = InjuryStatus.OUT_MONTHS;
-  }
-}
-
-// Career stats
-class PlayerCareer {
-  int   worldRanking      = 250;
-  int   rankingPoints     = 0;
-  int   titlesWon         = 0;
-  int   grandSlamTitles   = 0;
-  int   weeksAtNumberOne  = 0;
-  float prizeMoney        = 0;
-  ArrayList<String>      careerHistory = new ArrayList<String>();
-  ArrayList<MatchResult> recentResults = new ArrayList<MatchResult>();
-
-  String ageGroup      = "Open"; // "U10","U12","U14","U16","U18","U21","Open"
-  int    juniorRanking = 500;
-  int    collegeRanking = 0;
-  String currentOrg   = ""; // "USTA Juniors","AAU","NHSAA","NCAA","ATP","NBA","NFL","MLB","PGA","WBC"
-
-  void addPoints(int pts) {
-    rankingPoints += pts;
-    rankingPoints = max(0, rankingPoints);
-  }
-
-  void recordTitle(boolean isGrandSlam, float prize) {
-    titlesWon++;
-    prizeMoney += prize;
-    if (isGrandSlam) grandSlamTitles++;
-  }
-
-  void addHistory(String entry) { careerHistory.add(entry); }
-
-  void addResult(MatchResult r) {
-    recentResults.add(0, r);
-    if (recentResults.size() > 10) recentResults.remove(recentResults.size() - 1);
-  }
-}
-
-class AcademicRecord {
-  boolean inHighSchool = false;
-  boolean inCollege = false;
-  String schoolName = "";
-  String collegeName = "";
-  float gpa = 3.2;
-  int collegeYear = 0;
-  boolean hasScholarship = false;
-  float scholarshipValue = 0;
-  boolean wentPro = false;
-  ArrayList<CollegeOffer> offers = new ArrayList<CollegeOffer>();
-}
-
-class CollegeOffer {
-  String school, conference;
-  float scholarshipPct, prestigeRating;
-  boolean isD1;
-  CollegeOffer(String s, String c, float sp, float p, boolean d) {
-    school=s; conference=c; scholarshipPct=sp; prestigeRating=p; isD1=d;
-  }
-}
-
-// Personality
-class PlayerPersonality {
-  float clutchFactor  = 50 + random(-15, 15);
-  float aggression    = 50 + random(-15, 15);
-  float consistency   = 50 + random(-15, 15);
-  float adaptability  = 50 + random(-15, 15);
-  float determination = 50 + random(-15, 15);
-}
-
-// Progression
-class PlayerProgression {
-  Player player;
-  PlayerProgression(Player p) { player = p; }
-
-  int peakAge() {
-    switch (player.playStyle) {
-      case SERVE_VOLLEY:         return 25;
-      case AGGRESSIVE_BASELINER: return 26;
-      case COUNTER_PUNCHER:      return 28;
-      default:                   return 27;
-    }
-  }
-
-  void applyTrainingGains(TrainingSession session) {
-    PlayerAttributes a = player.baseAttributes;
-    TrainingOutcome  o = session.projectedGains();
-    a.serve    = min(99, a.serve    + o.serveGain);
-    a.forehand = min(99, a.forehand + o.forehandGain);
-    a.backhand = min(99, a.backhand + o.backhandGain);
-    a.speed    = min(99, a.speed    + o.speedGain);
-    a.stamina  = min(99, a.stamina  + o.staminaGain);
-    a.mental   = min(99, a.mental   + o.mentalGain);
-    player.form.fatigue = min(100, player.form.fatigue + o.fatigueAdded);
-  }
-
-  void applyAgingDecay(int currentYear) {
-    int age  = player.age(currentYear);
-    int peak = peakAge();
-    if (age > peak) {
-      float decay = 0.003 * (age - peak);
-      PlayerAttributes a = player.baseAttributes;
-      a.speed   = max(30, (int)(a.speed   - decay * 100));
-      a.stamina = max(30, (int)(a.stamina - decay * 80));
-      a.serve   = max(30, (int)(a.serve   - decay * 40));
-    }
-  }
-}
-
-// Family
-class Family {
-  Spouse               spouse          = null;
-  ArrayList<Child>     children        = new ArrayList<Child>();
-  float                familyHappiness = 70;
-  float                travelTolerance = 80;
-  RelationshipStatus   status          = RelationshipStatus.SINGLE;
-
-  void advanceYear(float weeksAway) {
-    if (spouse != null) {
-      if (weeksAway > 30) {
-        familyHappiness   = max(0, familyHappiness - 10);
-        spouse.resentment = min(100, spouse.resentment + 8);
-      } else {
-        familyHappiness   = min(100, familyHappiness + 5);
-        spouse.resentment = max(0, spouse.resentment - 3);
-      }
-    }
-    for (Child c : children) {
-      c.age++;
-      c.happiness = constrain(c.happiness + (weeksAway > 30 ? -5 : 3), 0, 100);
-    }
-  }
-
-  String partnerName()   { return spouse != null ? spouse.name : ""; }
-
-  String tryMeetPartner() {
-    String[] names = {
-      "Sofia","Camila","Isabella","Valentina","Luna","Elena","Natalia",
-      "Alessia","Mia","Zara","Jade","Leila","Priya","Yuki","Amara",
-      "Chloe","Ines","Lara","Nadia","Rosa"
-    };
-    return names[(int)random(names.length)];
-  }
-
-  String statusDisplay() {
-    if (spouse != null) {
-      switch (status) {
-        case MARRIED:   return "Married to " + spouse.name;
-        case ENGAGED:   return "Engaged to " + spouse.name;
-        case DATING:    return "Dating " + spouse.name;
-        case SEPARATED: return "Separated";
-        case DIVORCED:  return "Divorced";
-        default:        return "With " + spouse.name;
-      }
-    }
-    return "Single";
-  }
-}
-
-class Spouse {
-  String name;
-  float  supportLevel = 70 + random(-20, 20);
-  float  resentment   = 10;
-  Spouse(String n) { name = n; }
-}
-
-class Child {
-  String name;
-  int    age;
-  float  happiness = 80;
-  Child(String n, int a) { name = n; age = a; }
-}
-
-// Coach
-class Coach {
-  String name, specialization, personality;
-  CoachType type;
-  float effectiveness, loyalty, salary;
-  int yearsWorked;
-  Coach(String n, CoachType t, float eff, float sal) {
-    name=n; type=t; effectiveness=eff; salary=sal;
-    loyalty=60+random(-15,15); yearsWorked=0;
-    String[] p={"Taskmaster","Mentor","Analyst","Motivator","Tactician"};
-    personality=p[(int)random(p.length)];
-    switch(t){
-      case HEAD_COACH:       specialization="Overall Strategy"; break;
-      case FITNESS_TRAINER:  specialization="Strength & Conditioning"; break;
-      case MENTAL_COACH:     specialization="Sports Psychology"; break;
-      case TECHNICAL_COACH:  specialization="Technical Skills"; break;
-      case NUTRITION_COACH:  specialization="Performance Nutrition"; break;
-      default: specialization="General";
-    }
-  }
-  float trainingMult() { return map(effectiveness,0,100,0.7f,1.5f); }
-  String tier() { return effectiveness>=85?"ELITE":effectiveness>=70?"PRO":effectiveness>=55?"EXP":"ENTRY"; }
-  color tierColor() { return effectiveness>=85?color(255,210,60):effectiveness>=70?color(185,95,255):effectiveness>=55?color(75,165,255):color(130,140,185); }
-  String emoji() { switch(type){case HEAD_COACH:return "🎯";case FITNESS_TRAINER:return "💪";case MENTAL_COACH:return "🧠";case TECHNICAL_COACH:return "🎾";case NUTRITION_COACH:return "🥗";default:return "👤";} }
-}
-
-class CoachingStaff {
-  ArrayList<Coach> coaches = new ArrayList<Coach>();
-  int maxCoaches = 3;
-  float overallMult() {
-    float m=1.0f;
-    for(Coach c:coaches) if(c.type==CoachType.HEAD_COACH||c.type==CoachType.FITNESS_TRAINER) m*=0.85f+c.effectiveness*0.003f;
-    return constrain(m,0.7f,2.0f);
-  }
-  float weeklyWages() { float t=0; for(Coach c:coaches) t+=c.salary; return t; }
-  Coach get(CoachType t) { for(Coach c:coaches) if(c.type==t) return c; return null; }
-}
 
 // ============================================================
-// NUTRITION SYSTEM
+// HelpOverlay
 // ============================================================
-class NutritionPlan {
-  String name;
-  float weeklyCost;
-  float staminaBonus, speedBonus, recoveryBonus, injuryResistance;
-  color planColor;
-  String emoji;
-  NutritionPlan(String n, float cost, float stam, float spd, float rec, float inj, color col, String em) {
-    name=n; weeklyCost=cost; staminaBonus=stam; speedBonus=spd;
-    recoveryBonus=rec; injuryResistance=inj; planColor=col; emoji=em;
-  }
-}
 
-class Supplement {
-  String name, category; // "Legal","Gray Area","PED"
-  float weeklyEffect;    // stat boost
-  float weeklyCost;
-  boolean detected = false;
-  int weeksUsed = 0;
-  Supplement(String n, String cat, float eff, float cost) {
-    name=n; category=cat; weeklyEffect=eff; weeklyCost=cost;
-  }
-}
-
-class NutritionSystem {
-  int currentPlanIdx = 1; // default BASIC
-  boolean hasNutritionist = false;
-  float nutritionistCostPerWeek = 3;
-  ArrayList<Supplement> activeSupplements = new ArrayList<Supplement>();
-  int hydrationLevel = 70; // 0-100
-
-  NutritionPlan[] getPlans() {
-    return new NutritionPlan[]{
-      new NutritionPlan("Fast Food",      0.5,  -5, -3, -5,  -8, color(255,75,75),   "F"),
-      new NutritionPlan("Basic Meals",    1.5,   0,  0,  0,   0, color(130,140,185), "B"),
-      new NutritionPlan("Balanced Diet",  3.0,   5,  3,  5,   5, color(50,220,120),  "D"),
-      new NutritionPlan("Athlete Diet",   6.0,  10,  6, 10,  10, color(75,165,255),  "A"),
-      new NutritionPlan("Elite Protocol",12.0,  15, 10, 15,  18, color(255,210,60),  "E")
-    };
-  }
-
-  NutritionPlan currentPlan() { return getPlans()[currentPlanIdx]; }
-
-  float weeklyTotalCost() {
-    float c = currentPlan().weeklyCost;
-    if (hasNutritionist) c += nutritionistCostPerWeek;
-    for (Supplement s : activeSupplements) c += s.weeklyCost;
-    return c;
-  }
-
-  void applyWeeklyEffects(Player p) {
-    NutritionPlan plan = currentPlan();
-    // Apply to base attributes
-    p.baseAttributes.stamina = constrain(p.baseAttributes.stamina + (int)(plan.staminaBonus * 0.02), 1, 99);
-    p.baseAttributes.speed   = constrain(p.baseAttributes.speed   + (int)(plan.speedBonus   * 0.02), 1, 99);
-    // Fatigue recovery bonus
-    p.form.fatigue = max(0, p.form.fatigue - plan.recoveryBonus * 0.1);
-    // Hydration drift
-    hydrationLevel = (int)constrain(hydrationLevel + (plan.staminaBonus > 0 ? 2 : -1), 0, 100);
-    // Supplement effects
-    for (Supplement s : activeSupplements) {
-      s.weeksUsed++;
-      p.baseAttributes.serve = constrain(p.baseAttributes.serve + (int)(s.weeklyEffect * 0.03), 1, 99);
-      // PED detection risk
-      if (s.category.equals("PED") && random(1) < 0.04) {
-        s.detected = true;
-        p.legalStatus = LegalStatus.INVESTIGATED;
-        p.career.addHistory("Failed drug test - " + s.name + " detected");
-      }
-    }
-  }
-
-  void setPlan(int idx) { currentPlanIdx = constrain(idx, 0, getPlans().length-1); }
-
-  ArrayList<Supplement> getAvailableSupplements() {
-    ArrayList<Supplement> list = new ArrayList<Supplement>();
-    list.add(new Supplement("Protein Shake",    "Legal",     2,  0.5));
-    list.add(new Supplement("Creatine",         "Legal",     4,  1.0));
-    list.add(new Supplement("Electrolytes",     "Legal",     1,  0.3));
-    list.add(new Supplement("Beta-Alanine",     "Legal",     3,  0.8));
-    list.add(new Supplement("DHEA",             "Gray Area", 7,  2.0));
-    list.add(new Supplement("HGH Precursors",   "Gray Area",10,  4.0));
-    list.add(new Supplement("Anabolic Steroids","PED",      20, 10.0));
-    list.add(new Supplement("EPO",              "PED",      15,  8.0));
-    return list;
-  }
-}
-
-// Finances (extended)
-class PlayerFinances {
-  float         savings         = 10_000;
-  float         weeklyExpenses  = 500;
-  LifestyleTier lifestyle       = LifestyleTier.FRUGAL;
-  ArrayList<String> endorsements     = new ArrayList<String>();
-  float endorsementIncome       = 0;
-
-  ArrayList<OwnedProperty>   properties  = new ArrayList<OwnedProperty>();
-  ArrayList<OwnedVehicle>    vehicles    = new ArrayList<OwnedVehicle>();
-  ArrayList<OwnedInvestment> investments = new ArrayList<OwnedInvestment>();
-  ArrayList<OwnedBusiness>   businesses  = new ArrayList<OwnedBusiness>();
-  float totalDebt = 0;
-
-  float weeklyExpensesForTier(LifestyleTier t) {
-    switch (t) {
-      case FRUGAL:      return 500;
-      case COMFORTABLE: return 2_500;
-      case LUXURY:      return 7_500;
-      case LAVISH:      return 20_000;
-      default:          return 2_500;
-    }
-  }
-
-  void setLifestyle(LifestyleTier t) {
-    lifestyle      = t;
-    weeklyExpenses = weeklyExpensesForTier(t);
-  }
-
-  void addEndorsement(String name, float weeklyValue) {
-    endorsements.add(name + " ($" + (int)weeklyValue + "/wk)");
-    endorsementIncome += weeklyValue;
-  }
-
-  float endorsementIncomeForRank(int rank) {
-    if (rank <=   5) return 18_000;
-    if (rank <=  15) return  8_000;
-    if (rank <=  50) return  3_000;
-    if (rank <= 100) return  1_200;
-    if (rank <= 200) return    300;
-    return 80;
-  }
-
-  String lifestyleLabel() {
-    switch (lifestyle) {
-      case FRUGAL:      return "Frugal";
-      case COMFORTABLE: return "Comfortable";
-      case LUXURY:      return "Luxury";
-      case LAVISH:      return "Lavish";
-      default:          return "Comfortable";
-    }
-  }
-
-  float totalInvestmentValue() {
-    float v = 0;
-    for (OwnedInvestment i : investments) v += i.currentValue;
-    return v;
-  }
-
-  float totalPropertyValue() {
-    float v = 0;
-    for (OwnedProperty p : properties) v += p.currentValue;
-    return v;
-  }
-
-  float totalWeeklyPropertyCost() {
-    float c = 0;
-    for (OwnedProperty p : properties) c += p.weeklyTotal();
-    return c;
-  }
-
-  float totalWeeklyVehicleCost() {
-    float c = 0;
-    for (OwnedVehicle v : vehicles) c += v.weeklyUpkeep;
-    return c;
-  }
-
-  float totalWeeklyBusinessRevenue() {
-    float r = 0;
-    for (OwnedBusiness b : businesses) r += b.weeklyProfit();
-    return r;
-  }
-
-  float netWorth() {
-    return savings + totalInvestmentValue() + totalPropertyValue();
-  }
-}
-
-// Rivalry
-class Rivalry {
-  Player playerOne, playerTwo;
-  int wins = 0, losses = 0;
-  ArrayList<String> matchHistory = new ArrayList<String>();
-
-  Rivalry(Player p1, Player p2) { playerOne = p1; playerTwo = p2; }
-
-  float psychologicalEdge() {
-    int total = wins + losses;
-    if (total == 0) return 0;
-    return map(wins, 0, total, -10, 10);
-  }
-}
-
-// Reputation
-class Reputation {
-  float publicImage       = 60;
-  float mediaRelationship = 60;
-  float leagueReputation  = 60;
-
-  void applyPositive(float amount) {
-    publicImage       = constrain(publicImage       + amount,        0, 100);
-    mediaRelationship = constrain(mediaRelationship + amount * 0.7,  0, 100);
-    leagueReputation  = constrain(leagueReputation  + amount * 0.5,  0, 100);
-  }
-
-  void applyNegative(float amount) {
-    publicImage       = constrain(publicImage       - amount,        0, 100);
-    mediaRelationship = constrain(mediaRelationship - amount * 1.2,  0, 100);
-  }
-}
-
-// Parents
-class Parents {
-  Parent mom;
-  Parent dad;
-
-  Parents() {
-    String[] momNames = {"Maria","Elena","Sofia","Ana","Isabel","Carmen","Laura","Rosa","Julia","Paula",
-                         "Sarah","Jennifer","Emma","Olivia","Fatima","Yuki","Mei","Priya","Aisha","Linda"};
-    String[] dadNames = {"Carlos","Miguel","Antonio","David","Jorge","Luis","Roberto","Pedro","Fernando","Ricardo",
-                         "James","Robert","William","Michael","Omar","Hiroshi","Wei","Raj","Ahmed","John"};
-    mom = new Parent(momNames[(int)random(momNames.length)]);
-    dad = new Parent(dadNames[(int)random(dadNames.length)]);
-  }
-}
-
-class Parent {
-  String  name;
-  float   relationship;
-  boolean alive = true;
-
-  Parent(String n) {
-    name         = n;
-    relationship = constrain(70 + random(-20, 20), 30, 100);
-  }
-
-  String relationshipLabel() {
-    if (relationship >= 85) return "Very Close";
-    if (relationship >= 65) return "Good";
-    if (relationship >= 45) return "Distant";
-    return "Estranged";
-  }
-
-  color relationshipColor() {
-    if (relationship >= 75) return color(55, 185, 95);
-    if (relationship >= 50) return color(80, 140, 220);
-    if (relationship >= 30) return color(220, 160, 40);
-    return color(210, 65, 65);
-  }
-}
-
-// ============================================================
-// RIVAL SYSTEM
-// ============================================================
-interface Trackable {
-  String getSummaryLine();
-  boolean isActive();
-}
-
-class Rival implements Trackable {
-  String name, nationality;
-  int    ranking, h2hWins, h2hLosses, yearDebuted;
-  float  trashTalkLevel; // 0-100
-  boolean active;        // renamed from isActive to avoid method-name conflict
-
-  Rival(String n, String nat, int rank, int year) {
-    name = n; nationality = nat; ranking = rank; yearDebuted = year;
-    trashTalkLevel = 30; active = true;
-  }
-
-  String getSummaryLine() { return name + " H2H: " + h2hWins + "-" + h2hLosses; }
-  boolean isActive() { return active; }
-
-  String verdict() {
-    if (h2hWins > h2hLosses)   return "Dominated";
-    if (h2hLosses > h2hWins)   return "They had the edge";
-    return "Even";
-  }
-}
-// ============================================================
-// UI THEME
-// ============================================================
-class UITheme {
-  // ── Core palette — rich dark with vibrant accents ──────────
-  color BG        = color(8, 10, 20);           // near-black blue
-  color PANEL     = color(14, 20, 36);          // dark navy card
-  color PANEL_2   = color(20, 28, 50);          // slightly lighter
-  color PANEL_3   = color(28, 38, 65);          // hover state
-  color BORDER    = color(38, 52, 80);          // subtle border
-  color BORDER_LT = color(70, 95, 150);         // lighter border for focus
-
-  // ── Brand accents ──────────────────────────────────────────
-  color GOLD      = color(255, 210, 60);        // primary gold
-  color ACCENT    = color(255, 210, 60);        // alias
-  color ACCENT2   = color(75, 165, 255);        // electric blue
-  color PURPLE    = color(185, 95, 255);        // electric purple
-  color TEAL      = color(45, 220, 185);        // teal
-  color ORANGE    = color(255, 130, 45);        // warm orange
-
-  // ── Semantic colors ────────────────────────────────────────
-  color SUCCESS   = color(50, 220, 120);        // vivid green
-  color DANGER    = color(255, 75, 75);         // vivid red
-  color WARNING   = color(255, 175, 45);        // amber
-  color INFO      = color(75, 165, 255);        // blue
-  color FAMILY    = color(255, 100, 175);       // hot pink
-  color MENTAL    = color(185, 95, 255);        // purple for mental
-
-  // ── Text ───────────────────────────────────────────────────
-  color TEXT      = color(215, 225, 245);       // cool white
-  color TEXT_DIM  = color(115, 140, 185);       // muted blue-grey
-  color TEXT_GOLD = color(255, 210, 60);        // gold text
-
-  // ── Gradients (simulated via layered rects) ────────────────
-  color GRAD_TOP  = color(20, 28, 55);
-  color GRAD_BOT  = color(8, 10, 20);
-
-  // ── Typography ─────────────────────────────────────────────
-  int TITLE  = 30;
-  int HEADER = 20;
-  int BODY   = 13;
-  int SMALL  = 11;
-  int MICRO  = 9;
-
-  // ── Dot grid background ────────────────────────────────────
-  void drawDotGrid() {
-    int spacing = 28;
-    for (int gx = spacing; gx < width; gx += spacing)
-      for (int gy = 56; gy < height; gy += spacing) {
-        fill(55, 75, 120, 60); noStroke(); ellipse(gx, gy, 2, 2);
-      }
-  }
-
-  // ── Card with drop shadow + glass highlight ────────────────
-  void drawCard(float x, float y, float w, float h, boolean highlighted) {
-    // Shadow
-    fill(0, 0, 0, 40); noStroke();
-    rect(x + 2, y + 3, w, h, 10);
-    // Body
-    if (highlighted) { stroke(GOLD); strokeWeight(1.5); }
-    else             { stroke(BORDER); strokeWeight(1); }
-    fill(PANEL);
-    rect(x, y, w, h, 8);
-    noStroke();
-    // Glass highlight on top edge
-    fill(255, 255, 255, 18);
-    rect(x + 6, y + 1, w - 12, 3, 2);
-  }
-
-  void drawCard(float x, float y, float w, float h) {
-    drawCard(x, y, w, h, false);
-  }
-
-  // ── Accent card with left color stripe ────────────────────
-  void drawAccentCard(float x, float y, float w, float h, color accentColor) {
-    drawCard(x, y, w, h, false);
-    fill(accentColor);
-    rect(x, y + 8, 4, h - 16, 2);
-    fill(accentColor, 25);
-    rect(x, y, w, h, 8);
-    noStroke();
-  }
-
-  // ── Stat bar with glow tip ─────────────────────────────────
-  void drawStatBar(float x, float y, float w, float h, float value, float max, color barColor) {
-    // Track
-    fill(PANEL_2); noStroke(); rect(x, y, w, h, h/2);
-    float filled = map(constrain(value, 0, max), 0, max, 0, w);
-    if (filled > 2) {
-      // Bar
-      fill(barColor); rect(x, y, filled, h, h/2);
-      // Glow tip
-      fill(barColor, 80);
-      ellipse(x + filled, y + h/2, h * 3, h * 3);
-      // Shine on bar
-      fill(255, 255, 255, 30);
-      rect(x + 1, y + 1, filled - 2, h/2 - 1, h/2);
-    }
-  }
-
-  // ── Glowing stat bar (for critical stats) ─────────────────
-  void drawGlowBar(float x, float y, float w, float h, float value, float max, color barColor) {
-    fill(barColor, 20); noStroke(); rect(x - 2, y - 2, w + 4, h + 4, (h+4)/2);
-    drawStatBar(x, y, w, h, value, max, barColor);
-  }
-
-  // ── Button with pressed state ──────────────────────────────
-  boolean drawButton(float x, float y, float w, float h, String label, boolean hover) {
-    // Shadow
-    fill(0, 0, 0, 60); noStroke(); rect(x + 2, y + 3, w, h, 6);
-    // Body
-    color bg  = hover ? GOLD    : PANEL_2;
-    color fg  = hover ? color(10, 12, 25) : TEXT;
-    color bd  = hover ? GOLD    : BORDER;
-    fill(bg); stroke(bd); strokeWeight(hover ? 2 : 1);
-    rect(x, y, w, h, 6); noStroke();
-    // Shine
-    if (hover) { fill(255,255,255,30); rect(x+2, y+2, w-4, h/3, 4); }
-    fill(fg); textSize(BODY); textAlign(CENTER, CENTER);
-    text(label, x + w/2, y + h/2);
-    return hover;
-  }
-
-  // ── Danger button ─────────────────────────────────────────
-  boolean drawDangerButton(float x, float y, float w, float h, String label, boolean hover) {
-    fill(0,0,0,60); noStroke(); rect(x+2,y+3,w,h,6);
-    color bg = hover ? DANGER : color(55, 18, 18);
-    fill(bg); stroke(hover ? DANGER : color(90,28,28)); strokeWeight(1);
-    rect(x,y,w,h,6); noStroke();
-    fill(hover ? color(255,235,235) : color(210,100,100));
-    textSize(BODY); textAlign(CENTER,CENTER);
-    text(label, x+w/2, y+h/2);
-    return hover;
-  }
-
-  // ── Sport-colored button ───────────────────────────────────
-  void drawSportButton(float x, float y, float w, float h, String label, boolean selected, boolean hover, color sportCol) {
-    fill(0,0,0,50); noStroke(); rect(x+2,y+3,w,h,10);
-    color bg = selected ? sportCol : (hover ? color(red(sportCol),green(sportCol),blue(sportCol),60) : PANEL_2);
-    fill(bg); stroke(selected || hover ? sportCol : BORDER); strokeWeight(selected ? 2 : 1);
-    rect(x,y,w,h,10); noStroke();
-    if (selected) { fill(255,255,255,25); rect(x+2,y+2,w-4,h/3,8); }
-    fill(selected ? color(10,12,25) : (hover ? sportCol : TEXT_DIM));
-    textSize(BODY); textAlign(CENTER,CENTER);
-    text(label, x+w/2, y+h/2);
-  }
-
-  // ── Badge/pill ─────────────────────────────────────────────
-  void drawBadge(String label, float x, float y, color bg, color fg) {
-    textSize(MICRO); float w = textWidth(label) + 14;
-    fill(bg); noStroke(); rect(x, y, w, 20, 10);
-    fill(fg); textAlign(CENTER,CENTER); text(label, x+w/2, y+10);
-  }
-
-  void drawGoldBadge(String label, float x, float y) {
-    drawBadge(label, x, y, color(80,60,0), GOLD);
-  }
-
-  // ── XP / progress bar (wider, taller) ─────────────────────
-  void drawXPBar(float x, float y, float w, float h, float pct, color col) {
-    fill(col, 20); noStroke(); rect(x-1,y-1,w+2,h+2,h/2+1);
-    fill(PANEL_2); rect(x,y,w,h,h/2);
-    if (pct > 0.01) {
-      fill(col); rect(x,y,w*pct,h,h/2);
-      fill(255,255,255,40); rect(x+1,y+1,w*pct-2,h/2-1,h/2);
-    }
-  }
-
-  // ── Divider line ──────────────────────────────────────────
-  void drawDivider(float x, float y, float w) {
-    stroke(BORDER); strokeWeight(1);
-    line(x, y, x+w, y); noStroke();
-  }
-
-  // ── Icon circle ───────────────────────────────────────────
-  void drawIconCircle(String emoji, float cx, float cy, float r, color bg) {
-    fill(bg, 60); noStroke(); ellipse(cx, cy, r*2, r*2);
-    fill(bg); ellipse(cx, cy, r*1.4, r*1.4);
-    fill(TEXT); textSize(r*0.9); textAlign(CENTER, CENTER);
-    text(emoji, cx, cy+1);
-  }
-
-  boolean isHover(float mx, float my, float x, float y, float w, float h) {
-    return mx>=x && mx<=x+w && my>=y && my<=y+h;
-  }
-
-  // ── Sport color lookup ────────────────────────────────────
-  color sportColor(Sport s) {
-    switch(s) {
-      case BASKETBALL: return color(255, 120, 40);
-      case SOCCER:     return color(60, 210, 100);
-      case GOLF:       return color(60, 180, 100);
-      case BOXING:     return color(255, 75, 75);
-      default:         return color(255, 210, 60);
-    }
-  }
-}
-
-// ── Base Screen ─────────────────────────────────────────────
-abstract class BaseScreen {
-  GameEngine engine;
-  int hoverX, hoverY;
-
-  BaseScreen(GameEngine e) { engine = e; }
-
-  abstract void render();
-  void onEnter() {}
-  void onKey(char k, int kc) {}
-  void onClick(int mx, int my)   {}
-  void onRelease(int mx, int my) {}
-  void onHover(int mx, int my)   { hoverX = mx; hoverY = my; }
-
-  // ── Section header ────────────────────────────────────────
-  void sectionHeader(String label, float x, float y) {
-    fill(theme.TEXT_DIM); textSize(theme.SMALL); textAlign(LEFT, CENTER);
-    text(label.toUpperCase(), x, y);
-    stroke(theme.BORDER); strokeWeight(1);
-    line(x + textWidth(label.toUpperCase()) + 8, y, x + 360, y);
-    noStroke();
-  }
-
-  // ── Event panel with prominent choices ───────────────────
-  void drawEventPanel(GameEvent evt, float x, float y, float w) {
-    if (evt == null) return;
-    int numChoices = (evt.choices != null) ? evt.choices.size() : 0;
-    float h = 130 + numChoices * 68;
-
-    // Determine event color
-    color stripe = color(255, 210, 60);
-    String typeIcon = "⚡";
-    if (evt.eventType == EventType.FAMILY)    { stripe = color(255,100,175); typeIcon = "❤"; }
-    if (evt.eventType == EventType.INJURY)    { stripe = color(255, 75, 75); typeIcon = "🏥"; }
-    if (evt.eventType == EventType.MEDIA)     { stripe = color( 75,165,255); typeIcon = "📱"; }
-    if (evt.eventType == EventType.FINANCIAL) { stripe = color( 50,220,120); typeIcon = "💰"; }
-    if (evt.eventType == EventType.LEGAL)     { stripe = color(255,175, 45); typeIcon = "⚖"; }
-    if (evt.eventType == EventType.SOCIAL)    { stripe = color(185, 95,255); typeIcon = "🌟"; }
-    if (evt.eventType == EventType.RIVAL)     { stripe = color(255,130, 45); typeIcon = "⚔"; }
-
-    // Outer glow
-    fill(red(stripe)*0.15, green(stripe)*0.15, blue(stripe)*0.15, 120);
-    noStroke(); rect(x-4, y-4, w+8, h+8, 14);
-
-    // Card body
-    fill(16, 22, 40); stroke(stripe, 100); strokeWeight(1.5);
-    rect(x, y, w, h, 10); noStroke();
-
-    // Top accent bar full width
-    fill(stripe); rect(x, y, w, 5, 10, 10, 0, 0);
-
-    // Event type pill
-    fill(stripe, 30); noStroke(); rect(x+16, y+16, 80, 22, 11);
-    fill(stripe); textSize(10); textAlign(LEFT, CENTER);
-    text(typeIcon + "  " + (evt.type != null ? evt.type.replace("_"," ") : "EVENT"), x+24, y+27);
-
-    // Headline — large and bold
-    fill(255, 255, 255); textSize(16); textAlign(LEFT, TOP);
-    text(evt.headline == null ? "" : evt.headline, x+16, y+46);
-
-    // Description
-    fill(160, 175, 200); textSize(12); textAlign(LEFT, TOP);
-    drawWrappedText(evt.description == null ? "" : evt.description, x+16, y+76, w-32, 18);
-
-    // Divider
-    stroke(stripe, 40); strokeWeight(1);
-    line(x+16, y+128, x+w-16, y+128); noStroke();
-
-    // Choice buttons
-    if (evt.choices != null) {
-      float cy = y + 116;
-      color[] btnColors = {color(255,210,60), color(75,165,255), color(50,220,120)};
-      for (int i = 0; i < min(evt.choices.size(), 3); i++) {
-        EventChoice ch = evt.choices.get(i);
-        boolean hover = theme.isHover(hoverX, hoverY, x+12, cy, w-24, 60);
-        color btnCol = btnColors[i % btnColors.length];
-
-        // Button body
-        fill(hover ? btnCol : color(20,28,48));
-        stroke(hover ? btnCol : color(38,52,80)); strokeWeight(hover ? 2 : 1);
-        rect(x+12, cy, w-24, 60, 6); noStroke();
-        if (hover) { fill(255,255,255,20); rect(x+14, cy+2, w-28, 20, 4); }
-
-        // Number circle
-        fill(hover ? color(10,12,25) : btnCol, hover ? 255 : 160);
-        noStroke(); ellipse(x+32, cy+30, 24, 24);
-        fill(hover ? color(10,12,25) : color(10,14,28));
-        textSize(12); textAlign(CENTER, CENTER);
-        text((i+1)+"", x+32, cy+30);
-
-        // Label
-        fill(hover ? color(10,12,25) : color(215,225,245));
-        textSize(13); textAlign(LEFT, CENTER);
-        text(ch.label == null ? "" : ch.label, x+50, cy+18);
-
-        // Description
-        fill(hover ? color(30,40,60) : color(100,120,155));
-        textSize(10); textAlign(LEFT, CENTER);
-        String desc = ch.description == null ? "" : ch.description;
-        if (desc.length() > 65) desc = desc.substring(0,62)+"...";
-        text(desc, x+50, cy+40);
-
-        fill(hover ? color(20,30,50) : color(50,70,110));
-        textSize(8); textAlign(RIGHT, CENTER);
-        text("["+( i+1)+"]", x+w-16, cy+30);
-
-        cy += 68;
-      }
-    }
-  }
-
-  // Effect pills
-  void drawEffectPills(EventChoice ch, float x, float y) {
-    float px = x; float py = y;
-    if (ch.rankingPointsEffect != 0) px = drawPill((ch.rankingPointsEffect>0?"+":"")+ch.rankingPointsEffect+" PTS", px, py, ch.rankingPointsEffect>0);
-    if (ch.moneyEffect != 0)          px = drawPill("$"+(ch.moneyEffect>0?"+":"")+ch.moneyEffect+"K", px, py, ch.moneyEffect>0);
-    if (ch.confidenceEffect != 0)     px = drawPill((ch.confidenceEffect>0?"+":"")+ch.confidenceEffect+" CON", px, py, ch.confidenceEffect>0);
-    if (ch.happinessEffect != 0)      drawPill((ch.happinessEffect>0?"♥+":"♥")+ch.happinessEffect, px, py, ch.happinessEffect>0);
-  }
-
-  float drawPill(String label, float x, float y, boolean positive) {
-    textSize(9);
-    float w = textWidth(label) + 10;
-    fill(positive ? color(30, 70, 45) : color(70, 25, 25));
-    rect(x, y, w, 17, 9);
-    fill(positive ? theme.SUCCESS : theme.DANGER);
-    textAlign(CENTER, CENTER); text(label, x + w / 2, y + 8);
-    return x + w + 4;
-  }
-
-  void drawWrappedText(String txt, float x, float y, float maxW, float lineH) {
-    if (txt == null || txt.isEmpty()) return;
-    String[] words = txt.split(" ");
-    String line = "";
-    float cy = y;
-    textAlign(LEFT, TOP);
-    for (String word : words) {
-      String test = line.isEmpty() ? word : line + " " + word;
-      if (textWidth(test) > maxW) { text(line, x, cy); cy += lineH; line = word; }
-      else line = test;
-    }
-    if (!line.isEmpty()) text(line, x, cy);
-  }
-
-  color phaseColor(CareerPhase p) {
-    switch(p) {
-      case JUNIOR:    return color(100,160,255);
-      case RISING:    return color( 80,220,120);
-      case PRIME:     return color(220,160, 40);
-      case VETERAN:   return color(200,100, 60);
-      case DECLINING: return color(160, 80, 80);
-      default:        return theme.TEXT_DIM;
-    }
-  }
-
-  String formatMoney(float m) {
-    if (m < 0) return "-$" + formatMoneyAbs(-m);
-    return "$" + formatMoneyAbs(m);
-  }
-  String formatMoneyAbs(float m) {
-    if (m >= 1000000) return nf(m / 1000000, 0, 1) + "M";
-    if (m >= 1000)    return (int)(m / 1000) + "K";
-    return "" + (int)m;
-  }
-
-  protected void logCareerEvent(String msg) {
-    if (engine != null && engine.state != null && engine.state.player != null)
-      engine.state.player.career.addHistory(msg);
-  }
-}
-// ============================================================
-// SPORT CONFIGURATION — per-sport display data
-// ============================================================
-class SportConfig {
-  String   name;
-  String   subtitle;
-  String[] statNames;
-  String[] roleShort;
-  String[] roleFull;
-  String   rankLabel;
-  String   ptsLabel;
-  String   titlesLabel;
-  String   majorLabel;
-  String[] oppFirst;
-  String[] oppLast;
-  String[] oppNations;
-
-  SportConfig(String name, String subtitle,
-              String[] statNames, String[] roleShort, String[] roleFull,
-              String rankLabel, String ptsLabel, String titlesLabel, String majorLabel,
-              String[] oppFirst, String[] oppLast, String[] oppNations) {
-    this.name      = name;
-    this.subtitle  = subtitle;
-    this.statNames = statNames;
-    this.roleShort = roleShort;
-    this.roleFull  = roleFull;
-    this.rankLabel  = rankLabel;
-    this.ptsLabel   = ptsLabel;
-    this.titlesLabel = titlesLabel;
-    this.majorLabel  = majorLabel;
-    this.oppFirst   = oppFirst;
-    this.oppLast    = oppLast;
-    this.oppNations = oppNations;
-  }
-}
-
-SportConfig getSportConfig(Sport sport) {
-  switch (sport) {
-
-    case BASKETBALL:
-      return new SportConfig("Basketball", "NBA CAREER SIMULATOR",
-        new String[]{"SHOOTING","DRIBBLING","PASSING","DEFENSE","REBOUNDING","ATHLETICISM","IQ"},
-        new String[]{"PG","SG","SF","PF"},
-        new String[]{"Point Guard","Shooting Guard","Small Forward","Power Forward"},
-        "NBA RANK","CAREER WINS","TITLES","RINGS",
-        new String[]{"LeBron","Stephen","Kevin","Giannis","Luka","Nikola","Joel","Jayson","Damian","Kawhi"},
-        new String[]{"James","Curry","Durant","Antetokounmpo","Doncic","Jokic","Embiid","Tatum","Lillard","Leonard"},
-        new String[]{"USA","USA","USA","Greece","Slovenia","Serbia","Cameroon","USA","USA","Canada"});
-
-    case SOCCER:
-      return new SportConfig("Soccer", "FOOTBALL CAREER SIMULATOR",
-        new String[]{"PACE","SHOOTING","PASSING","DRIBBLING","PHYSICALITY","STAMINA","VISION"},
-        new String[]{"STR","MID","DEF","GK"},
-        new String[]{"Striker","Midfielder","Defender","Goalkeeper"},
-        "WORLD RANK","CAREER GOALS","TITLES","WORLD CUPS",
-        new String[]{"Kylian","Erling","Vinicius","Rodri","Bukayo","Phil","Jude","Pedri","Florian","Leroy"},
-        new String[]{"Mbappe","Haaland","Junior","Rodriguez","Saka","Foden","Bellingham","Gonzalez","Wirtz","Sane"},
-        new String[]{"France","Norway","Brazil","Spain","England","England","England","Spain","Germany","Germany"});
-
-    case GOLF:
-      return new SportConfig("Golf", "PGA TOUR CAREER SIMULATOR",
-        new String[]{"DRIVING","IRON PLAY","CHIPPING","PUTTING","MENTAL","ACCURACY","DISTANCE"},
-        new String[]{"PWR","PREC","SHT","ALL"},
-        new String[]{"Power Hitter","Precision Player","Short Game Spec.","All-Round"},
-        "WORLD RANK","TOUR WINS","TITLES","MAJOR WINS",
-        new String[]{"Scottie","Rory","Jon","Xander","Viktor","Collin","Cameron","Patrick","Max","Brooks"},
-        new String[]{"Scheffler","McIlroy","Rahm","Schauffele","Hovland","Morikawa","Smith","Cantlay","Homa","Koepka"},
-        new String[]{"USA","N.Ireland","Spain","USA","Norway","USA","Australia","USA","USA","USA"});
-
-    case BOXING:
-      return new SportConfig("Boxing", "PROFESSIONAL BOXING CAREER SIMULATOR",
-        new String[]{"JAB","POWER","DEFENSE","FOOTWORK","CHIN","STAMINA","RING IQ"},
-        new String[]{"OUT","BRAW","CNTR","B-P"},
-        new String[]{"Outboxer","Brawler","Counter Puncher","Boxer-Puncher"},
-        "WORLD RANK","CAREER WINS","TITLES","WORLD TITLES",
-        new String[]{"Oleksandr","Tyson","Anthony","Deontay","Naoya","Canelo","Terence","Vasyl","Ryan","Errol"},
-        new String[]{"Usyk","Fury","Joshua","Wilder","Inoue","Alvarez","Crawford","Lomachenko","Garcia","Spence"},
-        new String[]{"Ukraine","UK","UK","USA","Japan","Mexico","USA","Ukraine","USA","USA"});
-
-    default: // TENNIS
-      return new SportConfig("Tennis", "PROFESSIONAL TENNIS CAREER SIMULATOR",
-        new String[]{"SERVE","FOREHAND","BACKHAND","VOLLEY","SPEED","STAMINA","MENTAL"},
-        new String[]{"AGGR","CNTR","S&V","ALL"},
-        new String[]{"Aggressive Baseliner","Counter Puncher","Serve & Volley","All Court"},
-        "WORLD RANKING","RANKING PTS","TITLES","GS TITLES",
-        new String[]{"Carlos","Novak","Roger","Rafael","Jannik","Daniil","Alexander","Andrey","Holger","Taylor"},
-        new String[]{"Alcaraz","Djokovic","Federer","Nadal","Sinner","Medvedev","Zverev","Rublev","Rune","Fritz"},
-        new String[]{"Spain","Serbia","Switzerland","Spain","Italy","Russia","Germany","Russia","Denmark","USA"});
-  }
-}
-// ============================================================
-// TRAINING SCREEN
-// ============================================================
-class TrainingScreen extends BaseScreen {
-  String[] trainingTypes = {"SERVE", "FITNESS", "MENTAL", "TACTICAL"};
-  float[]  intensities   = {60, 60, 60, 60};
-  int      selectedType  = 0;
-
-  // Track actual button position from render so onClick uses the same coords
-  float trainBtnY  = -1;
-  float tabY       = -1;
-  float sliderXr   = 0, sliderYr = 0, sliderWr = 0;
-
-  boolean hoverTrain  = false;
-  String  lastResult  = "";
-  float   resultAlpha = 0;
-  boolean showCoaching = false;
-
-  TrainingScreen(GameEngine e) { super(e); }
-
-  void render() {
-    Player p = engine.state.player;
-    if (p == null) return;
-
-    theme.drawDotGrid();
-
-    // COACHES tab button at top-right
-    boolean chov = theme.isHover(hoverX, hoverY, 560, 70, 170, 36);
-    if (showCoaching) {
-      theme.drawButton(560, 70, 170, 36, "< BACK TO TRAINING", chov);
-      engine.coachingScreen.hoverX = hoverX; engine.coachingScreen.hoverY = hoverY;
-      engine.coachingScreen.render();
-      return;
-    }
-    theme.drawButton(560, 70, 170, 36, "🏋 COACHES", chov);
-
-    float x = 30, y = 70;
-
-    // Header
-    fill(theme.ACCENT); textSize(24); textAlign(LEFT, TOP);
-    text("TRAINING CAMP", x, y);
-    fill(theme.TEXT_DIM); textSize(12);
-    text("Choose type · set intensity · run session", x, y + 32);
-    y += 68;
-
-    // ── Type tabs ──────────────────────────────────────────
-    tabY = y;
-    color[] tabCols = { theme.ACCENT, theme.SUCCESS, theme.PURPLE, theme.ACCENT2 };
-    for (int i = 0; i < trainingTypes.length; i++) {
-      boolean sel  = (i == selectedType);
-      color   tc   = tabCols[i];
-      fill(sel ? tc : theme.PANEL_2);
-      stroke(sel ? tc : theme.BORDER); strokeWeight(1);
-      rect(x + i * 168, y, 156, 44, 6); noStroke();
-      fill(sel ? color(10, 12, 22) : tc);
-      textSize(12); textAlign(CENTER, CENTER);
-      text(trainingTypes[i], x + i * 168 + 78, y + 22);
-    }
-    y += 58;
-
-    // ── Intensity card ────────────────────────────────────
-    theme.drawCard(x, y, 730, 190);
-
-    fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, TOP);
-    text("INTENSITY", x + 20, y + 14);
-    fill(theme.ACCENT); textSize(28); textAlign(LEFT, TOP);
-    text((int)intensities[selectedType] + "%", x + 100, y + 8);
-
-    // Labels
-    fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP);
-    text("LOW", x + 20, y + 48);
-    textAlign(RIGHT, TOP);
-    text("MAX", x + 710, y + 48);
-
-    // Slider
-    float sX = x + 20, sY = y + 62, sW = 690, sH = 14;
-    float filled = map(intensities[selectedType], 0, 100, 0, sW);
-    fill(theme.PANEL_2); rect(sX, sY, sW, sH, 7);
-    fill(theme.ACCENT);  rect(sX, sY, filled, sH, 7);
-    // Handle
-    fill(theme.BG); stroke(theme.ACCENT); strokeWeight(2);
-    ellipse(sX + filled, sY + sH / 2, 24, 24); noStroke();
-    fill(theme.ACCENT); ellipse(sX + filled, sY + sH / 2, 12, 12);
-
-    // Store slider coords for drag detection
-    sliderXr = sX; sliderYr = sY; sliderWr = sW;
-
-    // Projected gains
-    TrainingSession sess = new TrainingSession(trainingTypes[selectedType], intensities[selectedType]);
-    TrainingOutcome out  = sess.projectedGains();
-
-    float gy = y + 96;
-    fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, TOP);
-    text("PROJECTED GAINS:", x + 20, gy);
-
-    drawGainRow("Serve",    out.serveGain,    x + 130, gy);
-    drawGainRow("Forehand", out.forehandGain, x + 250, gy);
-    drawGainRow("Backhand", out.backhandGain, x + 370, gy);
-    drawGainRow("Speed",    out.speedGain,    x + 490, gy);
-    drawGainRow("Stamina",  out.staminaGain,  x + 590, gy);
-    drawGainRow("Mental",   out.mentalGain,   x + 658, gy);
-
-    gy += 22;
-    fill(theme.DANGER); textSize(10); textAlign(LEFT, TOP);
-    text("Fatigue +" + (int)out.fatigueAdded + "%", x + 130, gy);
-
-    float risk = p.health.injuryRisk(p.form, intensities[selectedType] / 100.0);
-    fill(risk > 0.1 ? theme.DANGER : theme.TEXT_DIM);
-    text("Injury risk: " + (int)(risk * 100) + "%", x + 300, gy);
-
-    y += 204;
-
-    // ── Two-column layout ─────────────────────────────────
-    // Left: RUN button + result
-    trainBtnY = y;   // <-- saved for onClick
-    hoverTrain = theme.isHover(hoverX, hoverY, x, y, 340, 54);
-    fill(hoverTrain ? theme.ACCENT : color(22, 36, 18));
-    stroke(theme.ACCENT); strokeWeight(hoverTrain ? 2 : 1);
-    rect(x, y, 340, 54, 6); noStroke();
-    fill(hoverTrain ? color(10, 12, 22) : theme.ACCENT);
-    textSize(14); textAlign(CENTER, CENTER);
-    text("▶  RUN TRAINING SESSION", x + 170, y + 27);
-
-    if (resultAlpha > 0) {
-      resultAlpha = max(0, resultAlpha - 2);
-      theme.drawCard(x, y + 64, 340, 56);
-      boolean ok = lastResult.startsWith("[OK]");
-      fill(ok ? theme.SUCCESS : theme.DANGER, resultAlpha);
-      textSize(11); textAlign(LEFT, CENTER);
-      text(lastResult.replace("[OK] ", "").replace("[!] ", ""), x + 14, y + 92);
-    }
-
-    // Right: player current stats summary
-    float cx = x + 360;
-    theme.drawCard(cx, y, 370, 120);
-    fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, TOP);
-    text("CURRENT STATS", cx + 16, y + 10);
-
-    PlayerAttributes eff = p.effectiveAttributes();
-    SportConfig sc = engine.state.sportConfig != null ? engine.state.sportConfig : getSportConfig(Sport.TENNIS);
-    int[] vals = {eff.serve, eff.forehand, eff.backhand, eff.volley, eff.speed, eff.stamina, eff.mental};
-
-    for (int i = 0; i < sc.statNames.length; i++) {
-      float bx = cx + 16 + (i % 4) * 88;
-      float by = y + 28 + (i / 4) * 44;
-      fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text(sc.statNames[i], bx, by);
-      fill(theme.ACCENT2); textSize(16); textAlign(LEFT, TOP); text("" + vals[i], bx, by + 12);
-    }
-
-    // Fatigue + confidence bars
-    y += 134;
-    theme.drawCard(x, y, 730, 54);
-    fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, CENTER);
-    text("FATIGUE", x + 16, y + 14);
-    theme.drawStatBar(x + 80, y + 8, 240, 10, p.form.fatigue, 100, p.form.fatigue > 70 ? theme.DANGER : theme.ACCENT2);
-    fill(theme.TEXT_DIM); textSize(9); textAlign(LEFT, CENTER);
-    text("CONFIDENCE", x + 360, y + 14);
-    theme.drawStatBar(x + 452, y + 8, 256, 10, p.form.confidence, 100, theme.SUCCESS);
-
-    // Injury warning
-    if (p.health.status != InjuryStatus.HEALTHY) {
-      y += 62;
-      fill(theme.DANGER, 45); rect(x, y, 730, 36, 5);
-      fill(theme.DANGER); textSize(11); textAlign(CENTER, CENTER);
-      text("INJURED: " + p.health.injuredPart + " — " + p.health.weeksRemaining + " weeks remaining", x + 365, y + 18);
-    }
-
-    // Drag slider during mousePress
-    if (mousePressed && theme.isHover(mouseX, mouseY, sliderXr - 12, sliderYr - 8, sliderWr + 24, 30)) {
-      intensities[selectedType] = constrain(map(mouseX, sliderXr, sliderXr + sliderWr, 0, 100), 10, 100);
-    }
-  }
-
-  void drawGainRow(String label, int gain, float x, float y) {
-    fill(theme.TEXT_DIM); textSize(8); textAlign(LEFT, TOP); text(label, x, y);
-    fill(gain > 0 ? theme.SUCCESS : theme.TEXT_DIM); textSize(13); textAlign(LEFT, TOP);
-    text((gain > 0 ? "+" : "") + gain, x, y + 10);
-  }
-
-  void onClick(int mx, int my) {
-    // COACHES tab toggle
-    if (theme.isHover(mx, my, 560, 70, 170, 36)) {
-      showCoaching = !showCoaching;
-      return;
-    }
-    // Delegate to coaching screen when active
-    if (showCoaching) { engine.coachingScreen.onClick(mx, my); return; }
-    // Tab selection
-    if (tabY >= 0) {
-      for (int i = 0; i < trainingTypes.length; i++) {
-        if (theme.isHover(mx, my, 30 + i * 168, tabY, 156, 44)) { selectedType = i; return; }
-      }
-    }
-    // Train button — uses saved trainBtnY so coords always match render
-    if (trainBtnY >= 0 && theme.isHover(mx, my, 30, trainBtnY, 340, 54)) {
-      Player p = engine.state.player;
-      if (p == null) return;
-      TrainingSession sess = new TrainingSession(trainingTypes[selectedType], intensities[selectedType]);
-      p.progression.applyTrainingGains(sess);
-      float cMult = (p.coachingStaff!=null) ? p.coachingStaff.overallMult() : 1.0f;
-      p.baseAttributes.serve = min(99, p.baseAttributes.serve + (int)((cMult-1)*2));
-      float risk = p.health.injuryRisk(p.form, intensities[selectedType] / 100.0);
-      if (random(1) < risk) {
-        String[] parts = {"wrist","knee","shoulder","back","ankle"};
-        String part = parts[(int)random(parts.length)];
-        int weeks = (int)random(1, 6);
-        p.health.applyInjury(part, weeks);
-        lastResult = "[!] Injured " + part + " — out " + weeks + " weeks";
-        engine.state.lastEvent = lastResult;
-      } else {
-        int fatGain = (int)(intensities[selectedType] * 0.3);
-        lastResult = "[OK] Training done! Fatigue +" + fatGain + "% — gains applied.";
-        engine.state.lastEvent = "Training session completed — gains applied.";
-      }
-      p.addLifeEvent(engine.state.lastEvent, engine.state.currentYear);
-      resultAlpha = 255;
-    }
-  }
-}
-// ============================================================
-// COACHING SCREEN
-// ============================================================
-class CoachingScreen extends BaseScreen {
-  boolean showMarket=false;
-  ArrayList<Coach> marketCache=null;
-  CoachingScreen(GameEngine e){super(e);}
-  void render(){
-    Player p=engine.state.player; if(p==null||p.coachingStaff==null)return;
-    CoachingStaff cs=p.coachingStaff;
-    float x=30,y=70,w=700;
-    fill(theme.GOLD);textSize(22);textAlign(LEFT,TOP);text("🏋  COACHING STAFF",x,y);y+=34;
-    fill(cs.weeklyWages()>15?theme.DANGER:theme.SUCCESS);textSize(11);textAlign(LEFT,TOP);
-    text("Staff: "+cs.coaches.size()+"/"+cs.maxCoaches+"  |  Wages: $"+(int)cs.weeklyWages()+"K/wk  |  Training bonus: "+nf(cs.overallMult(),1,2)+"x",x,y);y+=30;
-    sectionHeader("YOUR STAFF",x,y);y+=20;
-    if(cs.coaches.isEmpty()){fill(theme.TEXT_DIM);textSize(12);textAlign(LEFT,TOP);text("No coaches hired. Training solo gives 1.0x gains.",x,y+8);y+=36;}
-    for(int i=0;i<cs.coaches.size();i++){
-      Coach c=cs.coaches.get(i);
-      boolean hov=theme.isHover(hoverX,hoverY,x,y,w,60);
-      fill(hov?theme.PANEL_3:theme.PANEL);stroke(hov?c.tierColor():theme.BORDER);strokeWeight(1);rect(x,y,w,60,6);noStroke();
-      fill(c.tierColor());textSize(18);textAlign(LEFT,CENTER);text(c.emoji(),x+12,y+30);
-      fill(theme.TEXT);textSize(14);textAlign(LEFT,TOP);text(c.name,x+42,y+8);
-      fill(c.tierColor());textSize(9);textAlign(LEFT,TOP);text(c.tier()+" "+c.type.toString().replace("_"," "),x+42,y+26);
-      fill(theme.TEXT_DIM);textSize(10);text(c.personality+" • "+c.specialization,x+42,y+42);
-      fill(theme.TEXT_DIM);textSize(10);textAlign(RIGHT,TOP);text("Eff:"+(int)c.effectiveness+"%  $"+c.salary+"K/wk",x+w-80,y+8);
-      boolean fhov=theme.isHover(hoverX,hoverY,x+w-78,y+20,70,24);
-      theme.drawDangerButton(x+w-78,y+20,70,24,"RELEASE",fhov);
-      y+=66;
-    }
-    y+=10;
-    boolean mhov=theme.isHover(hoverX,hoverY,x,y,220,38);
-    theme.drawButton(x,y,220,38,showMarket?"HIDE MARKET":"BROWSE COACHES",mhov);y+=50;
-    if(showMarket){
-      if(marketCache==null) marketCache=buildMarket();
-      sectionHeader("AVAILABLE COACHES",x,y);y+=20;
-      for(int i=0;i<marketCache.size();i++){
-        Coach c=marketCache.get(i); boolean full=cs.coaches.size()>=cs.maxCoaches;
-        boolean hov=theme.isHover(hoverX,hoverY,x,y,w,60);
-        fill(hov&&!full?theme.PANEL_3:theme.PANEL_2);stroke(hov&&!full?c.tierColor():theme.BORDER);strokeWeight(1);rect(x,y,w,60,6);noStroke();
-        fill(c.tierColor());textSize(18);textAlign(LEFT,CENTER);text(c.emoji(),x+12,y+30);
-        fill(theme.TEXT);textSize(14);textAlign(LEFT,TOP);text(c.name,x+42,y+8);
-        fill(c.tierColor());textSize(9);textAlign(LEFT,TOP);text(c.tier()+" "+c.type.toString().replace("_"," "),x+42,y+26);
-        fill(theme.TEXT_DIM);textSize(10);text(c.personality+" • "+c.specialization,x+42,y+42);
-        fill(theme.TEXT_DIM);textSize(10);textAlign(RIGHT,TOP);text("$"+c.salary+"K/wk  Eff:"+(int)c.effectiveness+"%",x+w-80,y+8);
-        if(!full){boolean hhov=theme.isHover(hoverX,hoverY,x+w-78,y+20,70,24);theme.drawButton(x+w-78,y+20,70,24,"HIRE",hhov);}
-        else{fill(theme.TEXT_DIM);textSize(9);textAlign(RIGHT,CENTER);text("Staff full",x+w-8,y+30);}
-        y+=66;
-      }
-    }
-  }
-  ArrayList<Coach> buildMarket(){
-    ArrayList<Coach> m=new ArrayList<Coach>();
-    String[] ns={"James Rivera","Maria Santos","David Chen","Aisha Okonkwo","Tom Bradley","Elena Petrov","Carlos Mendez","Sarah Kim"};
-    CoachType[] ts=CoachType.values();
-    for(int i=0;i<6;i++){float e=45+random(50);m.add(new Coach(ns[(int)random(ns.length)],ts[(int)random(ts.length)],e,max(1,(int)(e*0.12f))));}
-    return m;
-  }
-  void onClick(int mx,int my){
-    Player p=engine.state.player; if(p==null||p.coachingStaff==null)return;
-    CoachingStaff cs=p.coachingStaff;
-    float x=30,y=134;
-    // Release buttons
-    for(int i=0;i<cs.coaches.size();i++){if(theme.isHover(mx,my,x+700-78,y+20,70,24)){cs.coaches.remove(i);marketCache=null;return;}y+=66;}
-    y+=10;
-    if(theme.isHover(mx,my,x,y,220,38)){showMarket=!showMarket;if(showMarket)marketCache=buildMarket();return;}y+=50;
-    if(showMarket&&marketCache!=null){
-      y+=20;
-      for(Coach c:marketCache){if(theme.isHover(mx,my,x+622,y+20,70,24)&&cs.coaches.size()<cs.maxCoaches){cs.coaches.add(c);marketCache=null;p.career.addHistory("Hired "+c.name+" as "+c.type.toString().replace("_"," "));if(engine.state.popups!=null)engine.state.popups.push("COACH HIRED!",c.name+" joins your coaching staff.",c.tierColor());return;}y+=66;}
-    }
-  }
-  void onHover(int mx,int my){super.onHover(mx,my);}
-}
-// ============================================================
-// NUTRITION SCREEN
-// ============================================================
-class NutritionScreen extends BaseScreen {
-  NutritionScreen(GameEngine e) { super(e); }
-
-  void render() {
-    Player p = engine.state.player;
-    if (p == null || p.nutrition == null) return;
-    NutritionSystem ns = p.nutrition;
-    NutritionPlan[] plans = ns.getPlans();
-    float x = 30, y = 70, w = 700;
-
-    fill(theme.GOLD); textSize(22); textAlign(LEFT, TOP);
-    text("NUTRITION", x, y); y += 34;
-    fill(theme.TEXT_DIM); textSize(11);
-    text("Your diet affects stamina, recovery, and injury resistance every single week.", x, y); y += 32;
-
-    // Meal plan cards
-    fill(theme.TEXT); textSize(12); textAlign(LEFT, TOP); text("MEAL PLAN", x, y); y += 18;
-    float pw = (w - plans.length * 6f) / plans.length;
-    for (int i = 0; i < plans.length; i++) {
-      NutritionPlan pl = plans[i];
-      boolean sel = ns.currentPlanIdx == i;
-      boolean hov = theme.isHover(hoverX, hoverY, x + i * (pw + 6), y, pw, 90);
-      fill(sel ? pl.planColor : hov ? theme.PANEL_3 : theme.PANEL);
-      stroke(sel || hov ? pl.planColor : theme.BORDER); strokeWeight(sel ? 2 : 1);
-      rect(x + i * (pw + 6), y, pw, 90, 8); noStroke();
-      fill(sel ? color(10, 12, 25) : theme.TEXT);
-      textSize(18); textAlign(CENTER, TOP);
-      text(pl.emoji, x + i * (pw + 6) + pw / 2, y + 10);
-      textSize(10); text(pl.name, x + i * (pw + 6) + pw / 2, y + 42);
-      fill(sel ? color(10, 12, 25) : theme.TEXT_DIM);
-      textSize(9); text("$" + pl.weeklyCost + "K/wk", x + i * (pw + 6) + pw / 2, y + 58);
-      if (pl.staminaBonus != 0) {
-        fill(sel ? color(10, 12, 25) : (pl.staminaBonus > 0 ? theme.SUCCESS : theme.DANGER));
-        textSize(9); text((pl.staminaBonus > 0 ? "+" : "") + (int)pl.staminaBonus + " STA",
-                          x + i * (pw + 6) + pw / 2, y + 72);
-      }
-    }
-    y += 106;
-
-    // Current plan stats
-    NutritionPlan cur = ns.currentPlan();
-    theme.drawCard(x, y, w, 72);
-    fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, TOP);
-    text("ACTIVE: " + cur.emoji + " " + cur.name +
-         "   |   $" + cur.weeklyCost + "K/wk" +
-         "   |   Weekly total: $" + (int)ns.weeklyTotalCost() + "K", x + 14, y + 10);
-    fill(theme.SUCCESS);
-    text("Stamina " + (cur.staminaBonus >= 0 ? "+" : "") + (int)cur.staminaBonus +
-         "  Speed " + (cur.speedBonus >= 0 ? "+" : "") + (int)cur.speedBonus +
-         "  Recovery " + (cur.recoveryBonus >= 0 ? "+" : "") + (int)cur.recoveryBonus +
-         "  Injury Resist " + (cur.injuryResistance >= 0 ? "+" : "") + (int)cur.injuryResistance,
-         x + 14, y + 28);
-    fill(theme.TEXT_DIM); text("Hydration:", x + 14, y + 48);
-    theme.drawStatBar(x + 90, y + 44, 200, 8, ns.hydrationLevel, 100,
-                      ns.hydrationLevel > 60 ? theme.ACCENT2 : theme.DANGER);
-    y += 84;
-
-    // Supplements
-    fill(theme.TEXT); textSize(12); textAlign(LEFT, TOP); text("SUPPLEMENTS", x, y); y += 18;
-    ArrayList<Supplement> available = ns.getAvailableSupplements();
-    for (Supplement s : available) {
-      boolean active = false;
-      for (Supplement a : ns.activeSupplements) { if (a.name.equals(s.name)) { active = true; break; } }
-      boolean hov = theme.isHover(hoverX, hoverY, x, y, w, 40);
-      color sc = s.category.equals("Legal") ? theme.SUCCESS :
-                 s.category.equals("Gray Area") ? theme.WARNING : theme.DANGER;
-      fill(active ? sc : hov ? theme.PANEL_3 : theme.PANEL_2);
-      stroke(active || hov ? sc : theme.BORDER); strokeWeight(1);
-      rect(x, y, w, 40, 5); noStroke();
-      fill(active ? color(10, 12, 25) : theme.TEXT); textSize(12); textAlign(LEFT, CENTER);
-      text(s.name, x + 14, y + 20);
-      fill(active ? color(10, 12, 25) : sc); textSize(10); textAlign(LEFT, CENTER);
-      text(s.category, x + 200, y + 20);
-      fill(active ? color(10, 12, 25) : theme.TEXT_DIM); textAlign(RIGHT, CENTER);
-      text("$" + s.weeklyCost + "K/wk" + (active ? " — ACTIVE" : ""), x + w - 14, y + 20);
-      y += 46;
-    }
-  }
-
-  void onClick(int mx, int my) {
-    Player p = engine.state.player;
-    if (p == null || p.nutrition == null) return;
-    NutritionSystem ns = p.nutrition;
-    NutritionPlan[] plans = ns.getPlans();
-    float x = 30, y = 154, w = 700, pw = (w - plans.length * 6f) / plans.length;
-    // Plan card clicks
-    for (int i = 0; i < plans.length; i++) {
-      if (theme.isHover(mx, my, x + i * (pw + 6), y, pw, 90)) { ns.setPlan(i); return; }
-    }
-    // Supplement toggle clicks (y after plan cards + stat card + section header)
-    y += 106 + 84 + 18;
-    ArrayList<Supplement> available = ns.getAvailableSupplements();
-    for (Supplement s : available) {
-      if (theme.isHover(mx, my, x, y, w, 40)) {
-        boolean found = false;
-        for (int i = ns.activeSupplements.size() - 1; i >= 0; i--) {
-          if (ns.activeSupplements.get(i).name.equals(s.name)) {
-            ns.activeSupplements.remove(i); found = true; break;
-          }
-        }
-        if (!found) ns.activeSupplements.add(new Supplement(s.name, s.category, s.weeklyEffect, s.weeklyCost));
-        return;
-      }
-      y += 46;
-    }
-  }
-
-  void onHover(int mx, int my) { super.onHover(mx, my); }
-}
-// ============================================================
-// WORLD RANKINGS SCREEN
-// ============================================================
-class WorldRankScreen extends BaseScreen {
-  WorldRankScreen(GameEngine e) { super(e); }
-
-  void render() {
-    Player p = engine.state.player;
-    float x = 30, y = 70;
-    fill(theme.ACCENT); textSize(22); textAlign(LEFT, TOP);
-    text("WORLD RANKINGS", x, y);
-
-    y += 50;
-    fill(theme.TEXT_DIM); textSize(10); textAlign(LEFT, TOP);
-    text("RANK",   x,        y);
-    text("PLAYER", x +  70,  y);
-    text("NATION", x + 300,  y);
-    text("POINTS", x + 450,  y);
-
-    stroke(theme.BORDER);
-    line(x, y + 16, x + 600, y + 16);
-    noStroke();
-    y += 24;
-
-    ArrayList<WorldPlayer> wp = engine.ranking.worldPlayers;
-    for (int i = 0; i < min(20, wp.size()); i++) {
-      WorldPlayer w = wp.get(i);
-
-      // Check rival match
-      Rival matchRival = null;
-      if (engine.state.rivals != null) {
-        for (Rival rv : engine.state.rivals) {
-          if (rv.name.equals(w.name)) { matchRival = rv; break; }
-        }
-      }
-
-      if (i % 2 == 0) {
-        fill(theme.PANEL);
-        rect(x - 8, y - 2, 620, 28, 2);
-      }
-      // Rival flame indicator
-      if (matchRival != null) {
-        fill(theme.DANGER);
-        ellipse(x + 60, y + 12, 9, 9);
-      }
-      fill(i < 3 ? theme.ACCENT : theme.TEXT);
-      textSize(13); textAlign(LEFT, CENTER);
-      text("#" + w.ranking, x, y + 12);
-      text(w.name, x + 70, y + 12);
-      fill(theme.TEXT_DIM);
-      text(w.nationality, x + 300, y + 12);
-      fill(theme.TEXT);
-      text(w.points, x + 450, y + 12);
-      if (matchRival != null) {
-        fill(theme.DANGER); textSize(9); textAlign(LEFT, CENTER);
-        text("H2H: W" + matchRival.h2hWins + "-L" + matchRival.h2hLosses, x + 530, y + 12);
-      }
-      y += 30;
-    }
-
-    y += 10;
-    fill(theme.ACCENT, 40);
-    rect(x - 8, y - 2, 620, 28, 2);
-    fill(theme.ACCENT); textSize(13); textAlign(LEFT, CENTER);
-    if (p != null) {
-      text("-> #" + p.career.worldRanking + " " + p.name, x, y + 12);
-      fill(theme.TEXT_DIM); text(p.nationality, x + 300, y + 12);
-      fill(theme.TEXT);     text(p.career.rankingPoints, x + 450, y + 12);
-    }
-  }
-}
-class TutorialSystem {
-  int step = 0;
-  boolean active = true;
-  String[] tips = {
-    "Welcome! Press SPACE or tap AGE UP to advance time each week.",
-    "Read the event card in the middle — pick one of 3 choices to shape your career.",
-    "Watch your FATIGUE bar on the left. Rest weeks recover energy.",
-    "Check the LIFE tab for relationships, mental health, and finances.",
-    "Use TRAINING to boost your stats. Higher intensity = more gains but more fatigue.",
-    "Your decisions affect Fame, Wealth, and Happiness — not just athletic stats!",
-    "LIFESTYLE tab lets you buy property, cars, and investments.",
-    "Keep an eye on your MENTAL HEALTH — burnout ends careers early.",
-    "Romance events can lead to dating, engagement, and marriage.",
-    "You're on your own now. Make it count."
-  };
-
-  boolean isActive() { return active && step < tips.length; }
-
-  String currentTip() { return step < tips.length ? tips[step] : ""; }
-
-  void advance() { step++; if (step >= tips.length) active = false; }
-
-  void draw(float screenW, float screenH) {
-    if (!isActive()) return;
-    // Semi-transparent overlay banner at bottom
-    float bh = 64;
-    float by = screenH - bh - 10;
-    fill(0, 0, 0, 180);
-    noStroke();
-    rect(20, by, screenW - 40, bh, 8);
-    fill(255, 200, 55);
-    rect(20, by, 4, bh, 8, 0, 0, 8);
-    fill(255, 200, 55);
-    textSize(10);
-    textAlign(LEFT, CENTER);
-    text("TIP " + (step+1) + "/" + tips.length, 34, by + 12);
-    fill(228, 234, 248);
-    textSize(13);
-    text(currentTip(), 34, by + 40);
-    fill(130, 140, 160);
-    textSize(10);
-    textAlign(RIGHT, CENTER);
-    text("click to dismiss", screenW - 30, by + 52);
-  }
-
-  boolean handleClick(int mx, int my, float screenW, float screenH) {
-    if (!isActive()) return false;
-    float bh = 64;
-    float by = screenH - bh - 10;
-    if (mx >= 20 && mx <= screenW-20 && my >= by && my <= by+bh) {
-      advance();
-      return true;
-    }
-    return false;
-  }
-}
-
-class PopupManager {
-  ArrayList<GamePopup> queue = new ArrayList<GamePopup>();
-  GamePopup active = null;
-  int displayFrames = 0;
-  static final int DISPLAY_DURATION = 180; // 3 seconds at 60fps
-
-  void push(String headline, String body, color accent) {
-    queue.add(new GamePopup(headline, body, accent));
-  }
-
-  void pushAchievement(String title) {
-    push("ACHIEVEMENT UNLOCKED", title, color(255, 200, 55));
-  }
-
-  void update() {
-    if (active == null && !queue.isEmpty()) {
-      active = queue.remove(0);
-      displayFrames = DISPLAY_DURATION;
-    }
-    if (active != null) {
-      displayFrames--;
-      if (displayFrames <= 0) active = null;
-    }
-  }
-
+/** HelpOverlay — In-game help screen, toggle with H key. OOP: Encapsulation */
+class HelpOverlay { // OOP: Encapsulation
+  boolean visible = false;
+  void toggle() { visible = !visible; }
   void draw() {
-    update();
-    if (active == null) return;
-    float progress = displayFrames / (float)DISPLAY_DURATION;
-    float alpha = progress > 0.85 ? map(progress, 1.0, 0.85, 0, 255) :
-                  progress < 0.15 ? map(progress, 0.15, 0, 255, 0) : 255;
-    float slideY = progress > 0.9 ? map(progress, 1.0, 0.9, -100, 0) : 0;
-
-    float pw = 480, ph = 100;
-    float px = width/2 - pw/2;
-    float py = 60 + slideY;
-
-    fill(0, 0, 0, alpha * 0.7);
-    noStroke();
-    rect(px + 4, py + 4, pw, ph, 10);
-
-    fill(14, 20, 36, alpha);
-    stroke(active.accent, alpha);
-    strokeWeight(2);
-    rect(px, py, pw, ph, 10);
-    noStroke();
-
-    fill(active.accent, alpha);
-    rect(px, py + 12, 5, ph - 24, 0, 3, 3, 0);
-
-    fill(active.accent, alpha);
-    textSize(10); textAlign(LEFT, TOP);
-    text(active.headline, px + 18, py + 14);
-
-    fill(228, 234, 248, alpha);
-    textSize(15); textAlign(LEFT, TOP);
-    text(active.body, px + 18, py + 34);
-
-    // Progress bar
-    fill(active.accent, alpha * 0.3);
-    rect(px, py + ph - 4, pw, 4, 0, 0, 10, 10);
-    fill(active.accent, alpha);
-    rect(px, py + ph - 4, pw * (1-progress), 4, 0, 0, 10, 10);
+    if (!visible) return;
+    // Dark overlay
+    fill(0, 0, 0, 200); noStroke(); rect(0, 0, width, height);
+    // Help card
+    float cx = 80, cy = 80, cw = 1040, ch = 640;
+    fill(19, 21, 28); stroke(245, 197, 24, 80); strokeWeight(1.5);
+    rect(cx, cy, cw, ch, 12); noStroke();
+    fill(245, 197, 24); textSize(22); textAlign(LEFT, TOP);
+    text("HOW TO PLAY  —  SPORTLIFE", cx+24, cy+18);
+    fill(100, 120, 155); textSize(10); textAlign(RIGHT, TOP);
+    text("Press H to close", cx+cw-20, cy+22);
+    // Columns
+    float col1 = cx+24, col2 = cx+380, col3 = cx+700;
+    float y = cy + 60;
+    drawHelpSection("BASIC CONTROLS", new String[]{
+      "SPACE    Age up / advance week",
+      "1 / 2 / 3   Pick a decision",
+      "H        Toggle this help",
+      "Click    Navigate & select"
+    }, col1, y);
+    drawHelpSection("NAVIGATION TABS", new String[]{
+      "🏠 LIFE      Main gameplay screen",
+      "🏋 TRAIN     Boost your stats",
+      "🌍 WORLD     Global rankings",
+      "✨ STYLE     Properties & lifestyle",
+      "🏆 LEGACY    Career summary"
+    }, col2, y);
+    drawHelpSection("STATS EXPLAINED", new String[]{
+      "Gold bars   Primary skill (sport-specific)",
+      "Blue bars   Physical attributes",
+      "Purple bar  Mental strength",
+      "ENERGY      100% = fully rested",
+      "FAME        Public profile",
+      "HAPPINESS   Overall life satisfaction"
+    }, col3, y);
+    y = cy + 280;
+    drawHelpSection("GAMEPLAY LOOP", new String[]{
+      "1. Press SPACE to advance a week",
+      "2. An event appears — read it",
+      "3. Pick 1 of 3 choices",
+      "4. Effects apply immediately",
+      "5. Repeat — build your legacy!"
+    }, col1, y);
+    drawHelpSection("SPORT COLORS", new String[]{
+      "🎾 Tennis    Gold",
+      "🏀 Basketball  Orange",
+      "⚽ Soccer    Green",
+      "⛳ Golf      Teal",
+      "🥊 Boxing    Red"
+    }, col2, y);
+    drawHelpSection("TIPS", new String[]{
+      "Manage FATIGUE — high fatigue = bad stats",
+      "Hire coaches to boost training gains",
+      "Watch your WEALTH — contracts matter",
+      "Relationships affect happiness & focus",
+      "Junior → College → Pro: stay patient"
+    }, col3, y);
   }
-
-  boolean handleClick(int mx, int my) {
-    if (active == null) return false;
-    float pw = 480, ph = 100;
-    float px = width/2 - pw/2, py = 60;
-    if (mx >= px && mx <= px+pw && my >= py && my <= py+ph) {
-      active = null; displayFrames = 0; return true;
+  void drawHelpSection(String title, String[] items, float x, float y) {
+    fill(245, 197, 24); textSize(10); textAlign(LEFT, TOP);
+    text(title, x, y); y += 20;
+    for (String item : items) {
+      fill(200, 210, 230); textSize(11); textAlign(LEFT, TOP);
+      text(item, x, y); y += 20;
     }
-    return false;
   }
 }
-
-class GamePopup {
-  String headline, body;
-  color accent;
-  GamePopup(String h, String b, color a) { headline=h; body=b; accent=a; }
-}
-
-class FloatingText {
-  String text;
-  float x, y, alpha;
-  color col;
-  FloatingText(String t, float x, float y, color c) {
-    this.text=t; this.x=x; this.y=y; this.alpha=255; this.col=c;
-  }
-  boolean update() { y -= 1.2; alpha -= 4; return alpha > 0; }
-  void draw() {
-    fill(col, alpha); textSize(13); textAlign(CENTER, CENTER);
-    text(text, x, y);
-  }
-}
-
-class FloatingTextManager {
-  ArrayList<FloatingText> texts = new ArrayList<FloatingText>();
-  void add(String t, float x, float y, boolean positive) {
-    texts.add(new FloatingText(t, x, y, positive ? color(45,210,115) : color(240,72,72)));
-  }
-  void update() {
-    for (int i = texts.size()-1; i >= 0; i--)
-      if (!texts.get(i).update()) texts.remove(i);
-  }
-  void draw() { for (FloatingText ft : texts) ft.draw(); }
-}
-
-// ============================================================
-// SPORTS CAREER SIMULATOR
-// All events generated procedurally — no API key required.
-// To re-enable Claude AI events, paste your key into AIEngine.pde
-// ============================================================
-
-GameEngine engine;
-UITheme    theme;
-String     rivalNarCtx = "";  // rivals context injected into legacy AI prompt
-
-
-// ============================================================
-// CONFIGURATION
-// ============================================================
-String CLAUDE_API_KEY = "";
-final String CLAUDE_MODEL = "claude-sonnet-4-6";
-
-void setup() {
-  size(1200, 800);
-  smooth(4);
-  textFont(createFont("Arial", 13));
-  theme  = new UITheme();
-  engine = new GameEngine();
-  engine.start();
-}
-
-void draw() {
-  background(theme.BG);
-  engine.render();
-}
-
-void keyPressed()    { engine.processKey(key, keyCode); }
-void mousePressed()  { engine.processMouse(mouseX, mouseY); }
-void mouseReleased() { engine.processMouseReleased(mouseX, mouseY); }
-void mouseMoved()    { engine.processMouseMoved(mouseX, mouseY); }
-void mouseDragged()  { engine.processMouseMoved(mouseX, mouseY); }
-
-
-
-// ============================================================
-// ENUMS
-// ============================================================
-enum Sport              { TENNIS, BASKETBALL, SOCCER, GOLF, BOXING }
-enum Surface            { HARD, CLAY, GRASS, INDOOR_HARD }
-enum PlayStyle          { AGGRESSIVE_BASELINER, COUNTER_PUNCHER, SERVE_VOLLEY, ALL_COURT }
-enum TournamentTier     { GRAND_SLAM, MASTERS_1000, ATP_500, ATP_250, CHALLENGER }
-enum InjuryStatus       { HEALTHY, DAY_TO_DAY, OUT_WEEKS, OUT_MONTHS }
-enum RoundName          { R128, R64, R32, R16, QF, SF, F }
-enum CoachType { HEAD_COACH, FITNESS_TRAINER, MENTAL_COACH, TECHNICAL_COACH, NUTRITION_COACH }
-enum CareerPhase        { JUNIOR, RISING, PRIME, VETERAN, DECLINING }
-enum LegacyTier         { JOURNEYMAN, SOLID_PRO, STAR, LEGEND, GOAT }
-enum ScreenID           { MAIN_MENU, CAREER, MATCH, TRAINING, WORLD_RANKINGS, LIFESTYLE, LEGACY, MARKET }
-enum EventType          { CAREER_CHOICE, INJURY, RIVAL, MEDIA, FAMILY, TRAINING_RESULT, FINANCIAL, LEGAL, SOCIAL, RANDOM_LIFE }
-enum LifestyleTier      { FRUGAL, COMFORTABLE, LUXURY, LAVISH }
-enum RelationshipStatus { SINGLE, DATING, ENGAGED, MARRIED, SEPARATED, DIVORCED }
-
-// Life Sim enums
-enum PropertyType   {APARTMENT, CONDO, HOUSE, MANSION, BEACH_HOUSE, PENTHOUSE }
-enum VehicleType    { ECONOMY_CAR, SPORTS_CAR, LUXURY_CAR, SUPERCAR, PRIVATE_JET }
-enum InvestmentType { STOCKS, CRYPTO, BONDS, REAL_ESTATE_FUND, BUSINESS_VENTURE }
-enum MentalState    { THRIVING, STABLE, STRESSED, ANXIOUS, DEPRESSED, BURNED_OUT }
-enum SocialTier     { UNKNOWN, LOCAL_CELEB, NATIONAL_STAR, GLOBAL_ICON, MEGASTAR }
-enum AgentTier      { NO_AGENT, BASIC_AGENT, MID_TIER, ELITE, SUPERAGENT }
-enum AddictionLevel { NONE, MILD, MODERATE, SEVERE }
-enum LegalStatus    { CLEAN, INVESTIGATED, CHARGED, SETTLED, CONVICTED }
-enum AwardType      { PLAYER_OF_YEAR, BEST_NEWCOMER, COMEBACK_PLAYER, MVP, HUMANITARIAN, SPORTSMANSHIP }
-enum MarketTab        { PROPERTY, VEHICLES, INVESTMENTS, BUSINESS, AGENT }
-enum LifeTab          { OVERVIEW, MENTAL_HEALTH, RELATIONSHIPS, SOCIAL_MEDIA, LEGAL, NUTRITION }
-enum ActivityCategory { CAREER, TRAINING, LOVE, HEALTH, ASSETS, SOCIAL }
-enum SeasonOutcome    { CHAMPION, STRONG, AVERAGE, DISAPPOINTING, INJURY_RIDDLED }
-enum LifePhase { CHILDHOOD, EARLY_SCHOOL, TEEN, UNIVERSITY, PRO, RETIRED }
