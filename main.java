@@ -1,5 +1,3 @@
-
-
 // ============================================================
 // sports.pde
 // ============================================================
@@ -8170,14 +8168,37 @@ class CoachingScreen extends BaseScreen { // OOP: Inheritance — extends BaseSc
   void onClick(int mx,int my){
     Player p=engine.state.player; if(p==null||p.coachingStaff==null)return;
     CoachingStaff cs=p.coachingStaff;
-    float x=30,y=134;
-    // Release buttons
-    for(int i=0;i<cs.coaches.size();i++){if(theme.isHover(mx,my,x+700-78,y+20,70,24)){cs.coaches.remove(i);marketCache=null;return;}y+=66;}
-    y+=10;
-    if(theme.isHover(mx,my,x,y,220,38)){showMarket=!showMarket;if(showMarket)marketCache=buildMarket();return;}y+=50;
+    float x=30,w=700;
+    // Mirror render() y exactly: title(34) + stats(30) + sectionHeader(20) = y starts at 154
+    float y=154;
+    if(cs.coaches.isEmpty()) y+=36; // same empty-state gap as render
+    // Release buttons — one per hired coach
+    for(int i=0;i<cs.coaches.size();i++){
+      if(theme.isHover(mx,my,x+w-78,y+20,70,24)){cs.coaches.remove(i);marketCache=null;return;}
+      y+=66;
+    }
+    y+=10; // gap before BROWSE button
+    // BROWSE / HIDE MARKET button
+    if(theme.isHover(mx,my,x,y,220,38)){
+      showMarket=!showMarket;
+      if(showMarket) marketCache=buildMarket();
+      return;
+    }
+    y+=50;
+    // Market coach HIRE buttons
     if(showMarket&&marketCache!=null){
-      y+=20;
-      for(Coach c:marketCache){if(theme.isHover(mx,my,x+622,y+20,70,24)&&cs.coaches.size()<cs.maxCoaches){cs.coaches.add(c);marketCache=null;p.career.addHistory("Hired "+c.name+" as "+c.type.toString().replace("_"," "));if(engine.state.popups!=null)engine.state.popups.push("COACH HIRED!",c.name+" joins your coaching staff.",c.tierColor());return;}y+=66;}
+      y+=20; // sectionHeader gap
+      for(Coach c:marketCache){
+        if(theme.isHover(mx,my,x+w-78,y+20,70,24)&&cs.coaches.size()<cs.maxCoaches){
+          cs.coaches.add(c);
+          marketCache=null;
+          p.career.addHistory("Hired "+c.name+" as "+c.type.toString().replace("_"," "));
+          if(engine.state.popups!=null)
+            engine.state.popups.push("COACH HIRED!",c.name+" joins your coaching staff.",c.tierColor());
+          return;
+        }
+        y+=66;
+      }
     }
   }
 
